@@ -90,11 +90,11 @@ pub async fn run_client() -> ClientResult<()> {
     // tokio::spawn(read_messages(tcp_read));
 
     send_message(&mut tcp_write, ClientToServerPacket::Connect).await?;
-    println!("got {:?}", read_message(&mut tcp_read).await?.unwrap());
+    log::debug!("got {:?}", read_message(&mut tcp_read).await?.unwrap());
     send_message(&mut tcp_write, ClientToServerPacket::RequestPeerListing).await?;
-    println!("got {:?}", read_message(&mut tcp_read).await?.unwrap());
+    log::debug!("got {:?}", read_message(&mut tcp_read).await?.unwrap());
     send_message(&mut tcp_write, ClientToServerPacket::Disconnect).await?;
-    println!("got {:?}", read_message(&mut tcp_read).await?.unwrap());
+    log::debug!("got {:?}", read_message(&mut tcp_read).await?.unwrap());
 
     Ok(())
 }

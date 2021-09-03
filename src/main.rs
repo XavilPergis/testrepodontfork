@@ -12,6 +12,8 @@ pub enum RunArguments {
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     match RunArguments::from_args() {
         RunArguments::Server {} => match server::run_server().await {
             Ok(_) => {}

@@ -59,6 +59,7 @@ impl ClientDeserializerContext {
     async fn run_message_loop(&mut self) -> ServerResult<()> {
         while let Some(message) = read_whole_packet(&mut self.stream, &mut self.read_buffer).await?
         {
+            log::trace!("d#{}: deserialized {:?}", self.connection_id, message);
             self.message_sender
                 .send(DeserializerMessage::Message {
                     id: self.connection_id,
@@ -141,7 +142,7 @@ impl ClientSerializerContext {
                 SerializerMessage::Shutdown => break,
                 SerializerMessage::Message { message } => {
                     write_whole_message(&mut self.stream, &mut self.write_buffer, &message).await?;
-                    println!("#{}: serialized {:?}", self.connection_id, message);
+                    log::trace!("s#{}: serialized {:?}", self.connection_id, message);
                 }
             }
         }
@@ -153,6 +154,7 @@ impl ClientSerializerContext {
 struct ServerContext {
     current_client_id: u64,
     connections: HashMap<u64, ClientConnection>,
+    running: bool,
 }
 
 impl ServerContext {
@@ -160,6 +162,7 @@ impl ServerContext {
         Self {
             current_client_id: 0,
             connections: HashMap::new(),
+            running: true,
         }
     }
 
@@ -167,102 +170,100 @@ impl ServerContext {
         self.connections.insert(connection.id, connection);
     }
 
-    fn handle_deserializer_message(&mut self, message: DeserializerMessage) -> bool {
-        match message {
-            DeserializerMessage::Message { id, message } => match message {
-                ClientToServerPacket::Connect => {
-                    println!("client #{} sent connection", id);
-                    for (&other_id, connection) in self.connections.iter() {
-                        connection
-                            .server_sender
-                            .send(if id == other_id {
-                                SerializerMessage::Message {
-                                    message: ServerToClientPacket::ConnectAck,
-                                }
-                            } else {
-                                SerializerMessage::Message {
-                                    message: ServerToClientPacket::PeerConnected { peer_id: id },
-                                }
-                            })
-                            .unwrap();
-                    }
-                }
-
-                ClientToServerPacket::Disconnect => {
-                    println!("client #{} sent disconnection", id);
-                    for (&other_id, connection) in self.connections.iter() {
-                        connection
-                            .server_sender
-                            .send(if id == other_id {
-                                SerializerMessage::Message {
-                                    message: ServerToClientPacket::DisconnectAck,
-                                }
-                            } else {
-                                SerializerMessage::Message {
-                                    message: ServerToClientPacket::PeerDisonnected { peer_id: id },
-                                }
-                            })
-                            .unwrap();
-                    }
-                }
-
-                ClientToServerPacket::Message { message } => {
-                    for (&other_id, connection) in self.connections.iter() {
-                        connection
-                            .server_sender
-                            .send(if id == other_id {
-                                SerializerMessage::Message {
-                                    message: ServerToClientPacket::MessageAck,
-                                }
-                            } else {
-                                SerializerMessage::Message {
-                                    message: ServerToClientPacket::PeerMessage {
-                                        peer_id: id,
-                                        message: message.clone(),
-                                    },
-                                }
-                            })
-                            .unwrap();
-                    }
-                    println!("client #{} sent message '{}'", id, message)
-                }
-
-                ClientToServerPacket::Shutdown => {
-                    println!("client #{} requested shutdown", id);
-                    return true;
-                }
-
-                ClientToServerPacket::RequestPeerListing => {
-                    println!("client #{} requested peer list", id);
-                    self.connections[&id]
+    fn handle_packet(&mut self, id: u64, packet: ClientToServerPacket) {
+        match packet {
+            ClientToServerPacket::Connect => {
+                for (&other_id, connection) in self.connections.iter() {
+                    connection
                         .server_sender
-                        .send(SerializerMessage::Message {
-                            message: ServerToClientPacket::PeerListingResponse {
-                                peers: self
-                                    .connections
-                                    .keys()
-                                    .copied()
-                                    .filter(|&key| key != id)
-                                    .collect(),
-                            },
+                        .send(if id == other_id {
+                            SerializerMessage::Message {
+                                message: ServerToClientPacket::ConnectAck,
+                            }
+                        } else {
+                            SerializerMessage::Message {
+                                message: ServerToClientPacket::PeerConnected { peer_id: id },
+                            }
                         })
                         .unwrap();
                 }
-
-                ClientToServerPacket::RequestPeerInfo { peer_ids } => {
-                    println!("client #{} requested peer info on peers {:?}", id, peer_ids);
-                }
-            },
-            DeserializerMessage::Connect { id } => {
-                println!("client #{} connected", id);
             }
+
+            ClientToServerPacket::Disconnect => {
+                for (&other_id, connection) in self.connections.iter() {
+                    connection
+                        .server_sender
+                        .send(if id == other_id {
+                            SerializerMessage::Message {
+                                message: ServerToClientPacket::DisconnectAck,
+                            }
+                        } else {
+                            SerializerMessage::Message {
+                                message: ServerToClientPacket::PeerDisonnected { peer_id: id },
+                            }
+                        })
+                        .unwrap();
+                }
+            }
+
+            ClientToServerPacket::Message { message } => {
+                for (&other_id, connection) in self.connections.iter() {
+                    connection
+                        .server_sender
+                        .send(if id == other_id {
+                            SerializerMessage::Message {
+                                message: ServerToClientPacket::MessageAck,
+                            }
+                        } else {
+                            SerializerMessage::Message {
+                                message: ServerToClientPacket::PeerMessage {
+                                    peer_id: id,
+                                    message: message.clone(),
+                                },
+                            }
+                        })
+                        .unwrap();
+                }
+            }
+
+            ClientToServerPacket::Shutdown => {
+                self.running = false;
+            }
+
+            ClientToServerPacket::RequestPeerListing => {
+                self.connections[&id]
+                    .server_sender
+                    .send(SerializerMessage::Message {
+                        message: ServerToClientPacket::PeerListingResponse {
+                            peers: self
+                                .connections
+                                .keys()
+                                .copied()
+                                .filter(|&key| key != id)
+                                .collect(),
+                        },
+                    })
+                    .unwrap();
+            }
+
+            ClientToServerPacket::RequestPeerInfo { peer_ids: _ } => {}
+        }
+    }
+
+    fn handle_deserializer_message(&mut self, message: DeserializerMessage) {
+        match message {
+            DeserializerMessage::Message { id, message } => {
+                if self.connections.contains_key(&id) {
+                    self.handle_packet(id, message);
+                } else {
+                    log::warn!("got packet from dead connection #{}", id);
+                }
+            }
+            DeserializerMessage::Connect { id: _ } => {}
             DeserializerMessage::Disconnect { id } => {
-                println!("client #{} disconnected", id);
                 self.connections.remove(&id);
             }
         }
-
-        false
     }
 }
 
@@ -281,7 +282,7 @@ fn create_client_connection(
     tokio::spawn(async move {
         match serializer.run().await {
             Ok(_) => {}
-            Err(err) => eprintln!("{:?}", err),
+            Err(err) => log::warn!("#{}: serializer error: {:?}", connection_id, err),
         }
     });
 
@@ -290,7 +291,7 @@ fn create_client_connection(
     tokio::spawn(async move {
         match deserializer.run().await {
             Ok(_) => {}
-            Err(err) => eprintln!("{:?}", err),
+            Err(err) => log::warn!("#{}: deserializer error: {:?}", connection_id, err),
         }
     });
 
@@ -347,7 +348,8 @@ pub async fn run_server() -> ServerResult<()> {
 
             message = client_message_rx.recv() => {
                 // TODO: proper cleanup
-                if server_context.handle_deserializer_message(message.unwrap()) {
+                server_context.handle_deserializer_message(message.unwrap());
+                if !server_context.running {
                     break;
                 }
             }
@@ -356,21 +358,3 @@ pub async fn run_server() -> ServerResult<()> {
 
     Ok(())
 }
-
-/*
-
-c2s-parse-task:
-    - read incoming tcp stream
-    - parse messages into in-memory format
-    - send messages to central context
-
-s2c-send-task:
-    - write outgoing tcp stream
-    - serialize messages into buffers to be sent
-    - recieve messages from central context
-
-central-context:
-    - broadcast messages
-
-
-*/
