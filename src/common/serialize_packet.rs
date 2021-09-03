@@ -89,7 +89,7 @@ impl<T: SerializePacket> SerializePacket for Vec<T> {
     }
 }
 
-pub async fn write_whole_message<P: SerializePacket, W: AsyncWrite + Unpin>(
+pub async fn write_whole_packet<P: SerializePacket, W: AsyncWrite + Unpin>(
     stream: &mut W,
     buf: &mut Vec<u8>,
     message: &P,

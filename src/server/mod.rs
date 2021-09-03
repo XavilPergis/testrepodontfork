@@ -141,7 +141,7 @@ impl ClientSerializerContext {
             match message {
                 SerializerMessage::Shutdown => break,
                 SerializerMessage::Message { message } => {
-                    write_whole_message(&mut self.stream, &mut self.write_buffer, &message).await?;
+                    write_whole_packet(&mut self.stream, &mut self.write_buffer, &message).await?;
                     log::trace!("s#{}: serialized {:?}", self.connection_id, message);
                 }
             }
@@ -178,7 +178,7 @@ impl ServerContext {
                         .server_sender
                         .send(if id == other_id {
                             SerializerMessage::Message {
-                                message: ServerToClientPacket::ConnectAck,
+                                message: ServerToClientPacket::ConnectAck { connection_id: id },
                             }
                         } else {
                             SerializerMessage::Message {

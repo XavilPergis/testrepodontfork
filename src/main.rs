@@ -12,13 +12,14 @@ pub enum RunArguments {
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
-
     match RunArguments::from_args() {
-        RunArguments::Server {} => match server::run_server().await {
-            Ok(_) => {}
-            Err(err) => eprintln!("{:?}", err),
-        },
+        RunArguments::Server {} => {
+            env_logger::init();
+            match server::run_server().await {
+                Ok(_) => {}
+                Err(err) => eprintln!("{:?}", err),
+            }
+        }
         RunArguments::Client {} => match client::run_client().await {
             Ok(_) => {}
             Err(err) => eprintln!("{:?}", err),

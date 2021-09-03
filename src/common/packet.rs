@@ -3,14 +3,14 @@ pub use super::deserialize_packet::{
     PacketDeserializerContext,
 };
 pub use super::serialize_packet::{
-    write_whole_message, PacketSerializeError, PacketSerializeResult, PacketSerializerContext,
+    write_whole_packet, PacketSerializeError, PacketSerializeResult, PacketSerializerContext,
     SerializePacket,
 };
 
 // server -> client
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ServerToClientPacket {
-    ConnectAck,
+    ConnectAck { connection_id: u64 },
     DisconnectAck,
     // TODO
     MessageAck,
@@ -27,7 +27,7 @@ pub enum ServerToClientPacket {
 impl ServerToClientPacket {
     pub fn packet_id(&self) -> u32 {
         match self {
-            ServerToClientPacket::ConnectAck => S2C_ID_CONNECT_ACK,
+            ServerToClientPacket::ConnectAck { .. } => S2C_ID_CONNECT_ACK,
             ServerToClientPacket::DisconnectAck => S2C_ID_DISCONNECT_ACK,
             ServerToClientPacket::MessageAck => S2C_ID_MESSAGE_ACK,
             ServerToClientPacket::ShutdownAck => S2C_ID_SHUTDOWN_ACK,
@@ -57,8 +57,11 @@ impl SerializePacket for ServerToClientPacket {
     ) -> PacketSerializeResult<()> {
         ctx.serialize::<u32>(&self.packet_id())?;
         match self {
-            ServerToClientPacket::ConnectAck
-            | ServerToClientPacket::DisconnectAck
+            ServerToClientPacket::ConnectAck { connection_id } => {
+                ctx.serialize::<u64>(connection_id)?
+            }
+
+            ServerToClientPacket::DisconnectAck
             | ServerToClientPacket::MessageAck
             | ServerToClientPacket::ShutdownAck => {}
 
@@ -83,7 +86,9 @@ impl DeserializePacket for ServerToClientPacket {
         ctx: &mut PacketDeserializerContext<'buf>,
     ) -> PacketDeserializeResult<ServerToClientPacket> {
         Ok(match ctx.deserialize::<u32>()? {
-            S2C_ID_CONNECT_ACK => ServerToClientPacket::ConnectAck,
+            S2C_ID_CONNECT_ACK => ServerToClientPacket::ConnectAck {
+                connection_id: ctx.deserialize::<u64>()?,
+            },
             S2C_ID_DISCONNECT_ACK => ServerToClientPacket::DisconnectAck,
             S2C_ID_MESSAGE_ACK => ServerToClientPacket::MessageAck,
             S2C_ID_SHUTDOWN_ACK => ServerToClientPacket::ShutdownAck,
