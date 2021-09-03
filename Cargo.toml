@@ -8,3 +8,5 @@ edition = "2018"
 [dependencies]
 structopt = { version = "0.3", default-features = false }
 tokio = { version = "1.11.0", features = ["full"] }
+tui = "0.16"
+termion = "1.5"
