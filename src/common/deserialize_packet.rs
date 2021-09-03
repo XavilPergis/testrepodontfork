@@ -1,5 +1,9 @@
 use std::convert::TryInto;
 
+use tokio::io::{AsyncRead, AsyncReadExt};
+
+use super::{CommonError, CommonResult};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PacketDeserializeError {
     // These two variants indicate that more data should be coming in the future, so the parse should be retried later.
@@ -27,53 +31,61 @@ impl From<std::str::Utf8Error> for PacketDeserializeError {
 
 pub type PacketDeserializeResult<T> = Result<T, PacketDeserializeError>;
 
-pub trait DeserializePacket<'buf>: Sized {
-    fn deserialize(ctx: &mut PacketDeserializerContext<'buf>) -> PacketDeserializeResult<Self>;
+pub trait DeserializePacket: Sized {
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<Self>;
 }
 
-impl<'buf> DeserializePacket<'buf> for u8 {
-    fn deserialize(ctx: &mut PacketDeserializerContext<'buf>) -> PacketDeserializeResult<Self> {
+impl DeserializePacket for u8 {
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<Self> {
         Ok(ctx.parse_byte_sequence(1)?[0])
     }
 }
 
-impl<'buf> DeserializePacket<'buf> for u16 {
-    fn deserialize(ctx: &mut PacketDeserializerContext<'buf>) -> PacketDeserializeResult<Self> {
+impl DeserializePacket for u16 {
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<Self> {
         let bytes = ctx.parse_byte_sequence(std::mem::size_of::<u16>())?;
         Ok(u16::from_be_bytes(bytes.try_into().unwrap()))
     }
 }
 
-impl<'buf> DeserializePacket<'buf> for u32 {
-    fn deserialize(ctx: &mut PacketDeserializerContext<'buf>) -> PacketDeserializeResult<Self> {
+impl DeserializePacket for u32 {
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<Self> {
         let bytes = ctx.parse_byte_sequence(std::mem::size_of::<u32>())?;
         Ok(u32::from_be_bytes(bytes.try_into().unwrap()))
     }
 }
 
-impl<'buf> DeserializePacket<'buf> for u64 {
-    fn deserialize(ctx: &mut PacketDeserializerContext<'buf>) -> PacketDeserializeResult<Self> {
+impl DeserializePacket for u64 {
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<Self> {
         let bytes = ctx.parse_byte_sequence(std::mem::size_of::<u64>())?;
         Ok(u64::from_be_bytes(bytes.try_into().unwrap()))
     }
 }
 
-impl<'buf> DeserializePacket<'buf> for &'buf str {
-    fn deserialize(ctx: &mut PacketDeserializerContext<'buf>) -> PacketDeserializeResult<Self> {
+impl DeserializePacket for String {
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<Self> {
         let length = ctx.deserialize::<u32>()?;
         let bytes = ctx.parse_byte_sequence(length as usize)?;
-        Ok(std::str::from_utf8(bytes)?)
+        Ok(std::str::from_utf8(bytes)?.into())
     }
 }
 
-impl<'buf> DeserializePacket<'buf> for String {
-    fn deserialize(ctx: &mut PacketDeserializerContext<'buf>) -> PacketDeserializeResult<Self> {
-        Ok(ctx.deserialize::<&'buf str>()?.into())
-    }
-}
-
-impl<'buf, T: DeserializePacket<'buf>> DeserializePacket<'buf> for Vec<T> {
-    fn deserialize(ctx: &mut PacketDeserializerContext<'buf>) -> PacketDeserializeResult<Self> {
+impl<T: DeserializePacket> DeserializePacket for Vec<T> {
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<Self> {
         let num_items = ctx.deserialize::<u32>()?;
         let mut values = Vec::new();
         for _ in 0..num_items {
@@ -107,11 +119,11 @@ impl<'buf> PacketDeserializerContext<'buf> {
         }
     }
 
-    pub fn deserialize<T: DeserializePacket<'buf>>(&mut self) -> PacketDeserializeResult<T> {
+    pub fn deserialize<T: DeserializePacket>(&mut self) -> PacketDeserializeResult<T> {
         T::deserialize(self)
     }
 
-    pub fn parse<T: DeserializePacket<'buf>>(&mut self) -> PacketDeserializeResult<(T, usize)> {
+    pub fn parse<T: DeserializePacket>(&mut self) -> PacketDeserializeResult<(T, usize)> {
         // println!("parsing {:?}", self.packet);
         if self.packet.len() < 4 {
             return Err(PacketDeserializeError::UnknownPacketLength);
@@ -140,4 +152,36 @@ impl<'buf> PacketDeserializerContext<'buf> {
 
         Ok((packet, self.cursor))
     }
+}
+
+pub async fn read_whole_packet<'buf, P: DeserializePacket, S: AsyncRead + Unpin>(
+    stream: &mut S,
+    buf: &'buf mut Vec<u8>,
+) -> CommonResult<Option<P>> {
+    let (message, parsed_length) = loop {
+        // attempt to parse a packet first, so that if we get multiple
+        // packets at a time, we can actually parse both of them instead of
+        // having to wait for more data from the socket first
+        match PacketDeserializerContext::new(buf).parse() {
+            Ok(message) => break message,
+            Err(PacketDeserializeError::UnknownPacketLength) => {}
+            Err(PacketDeserializeError::MismatchedPacketLength {
+                buffer_length,
+                expected_from_header,
+            }) if buffer_length < expected_from_header => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        match stream.read_buf(buf).await? {
+            0 if buf.is_empty() => return Ok(None),
+            // getting to this read means we have an incomplete packet, but
+            // the connection was closed, so the packet can never be
+            // finished. this is an error condition.
+            0 => return Err(CommonError::ConnectionReset),
+            _ => {}
+        }
+    };
+
+    buf.drain(..parsed_length);
+    Ok(Some(message))
 }

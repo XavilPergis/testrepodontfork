@@ -1,8 +1,10 @@
 pub use super::deserialize_packet::{
-    DeserializePacket, PacketDeserializeError, PacketDeserializeResult, PacketDeserializerContext,
+    read_whole_packet, DeserializePacket, PacketDeserializeError, PacketDeserializeResult,
+    PacketDeserializerContext,
 };
 pub use super::serialize_packet::{
-    PacketSerializeError, PacketSerializeResult, PacketSerializerContext, SerializePacket,
+    write_whole_message, PacketSerializeError, PacketSerializeResult, PacketSerializerContext,
+    SerializePacket,
 };
 
 // server -> client
@@ -48,8 +50,11 @@ pub const S2C_ID_PEER_MESSAGE: u32 = 6;
 pub const S2C_ID_PEER_LISTING_RESPONSE: u32 = 7;
 pub const S2C_ID_PEER_INFO_RESPONSE: u32 = 8;
 
-impl<'buf> SerializePacket<'buf> for ServerToClientPacket {
-    fn serialize(&self, ctx: &mut PacketSerializerContext<'buf>) -> PacketSerializeResult<()> {
+impl SerializePacket for ServerToClientPacket {
+    fn serialize<'buf>(
+        &self,
+        ctx: &mut PacketSerializerContext<'buf>,
+    ) -> PacketSerializeResult<()> {
         ctx.serialize::<u32>(&self.packet_id())?;
         match self {
             ServerToClientPacket::ConnectAck
@@ -73,8 +78,8 @@ impl<'buf> SerializePacket<'buf> for ServerToClientPacket {
     }
 }
 
-impl<'buf> DeserializePacket<'buf> for ServerToClientPacket {
-    fn deserialize(
+impl DeserializePacket for ServerToClientPacket {
+    fn deserialize<'buf>(
         ctx: &mut PacketDeserializerContext<'buf>,
     ) -> PacketDeserializeResult<ServerToClientPacket> {
         Ok(match ctx.deserialize::<u32>()? {
@@ -119,8 +124,11 @@ pub const C2S_ID_SHUTDOWN: u32 = 3;
 pub const C2S_ID_REQUEST_PEER_LISTING: u32 = 4;
 pub const C2S_ID_REQUEST_PEER_INFO: u32 = 5;
 
-impl<'buf> SerializePacket<'buf> for ClientToServerPacket {
-    fn serialize(&self, ctx: &mut PacketSerializerContext<'buf>) -> PacketSerializeResult<()> {
+impl SerializePacket for ClientToServerPacket {
+    fn serialize<'buf>(
+        &self,
+        ctx: &mut PacketSerializerContext<'buf>,
+    ) -> PacketSerializeResult<()> {
         match self {
             ClientToServerPacket::Connect => ctx.serialize::<u32>(&C2S_ID_CONNECT)?,
             ClientToServerPacket::Disconnect => ctx.serialize::<u32>(&C2S_ID_DISCONNECT)?,
@@ -141,8 +149,8 @@ impl<'buf> SerializePacket<'buf> for ClientToServerPacket {
     }
 }
 
-impl<'buf> DeserializePacket<'buf> for ClientToServerPacket {
-    fn deserialize(
+impl DeserializePacket for ClientToServerPacket {
+    fn deserialize<'buf>(
         ctx: &mut PacketDeserializerContext<'buf>,
     ) -> PacketDeserializeResult<ClientToServerPacket> {
         Ok(match ctx.deserialize::<u32>()? {

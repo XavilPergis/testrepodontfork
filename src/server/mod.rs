@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener, TcpStream,
@@ -8,31 +7,16 @@ use tokio::{
     sync::mpsc,
 };
 
-use crate::common::packet::*;
+use crate::common::{packet::*, CommonError};
 
 #[derive(Debug)]
 pub enum ServerError {
-    Io(std::io::Error),
-    Deserialize(PacketDeserializeError),
-    Serialize(PacketSerializeError),
-    ConnectionReset,
+    Common(CommonError),
 }
 
-impl From<std::io::Error> for ServerError {
-    fn from(err: std::io::Error) -> Self {
-        ServerError::Io(err)
-    }
-}
-
-impl From<PacketDeserializeError> for ServerError {
-    fn from(err: PacketDeserializeError) -> Self {
-        ServerError::Deserialize(err)
-    }
-}
-
-impl From<PacketSerializeError> for ServerError {
-    fn from(err: PacketSerializeError) -> Self {
-        ServerError::Serialize(err)
+impl<T: Into<CommonError>> From<T> for ServerError {
+    fn from(err: T) -> Self {
+        ServerError::Common(err.into())
     }
 }
 
@@ -71,41 +55,10 @@ impl Default for ClientConnectionOptions {
     }
 }
 
-async fn read_message(
-    stream: &mut OwnedReadHalf,
-    buf: &mut Vec<u8>,
-) -> ServerResult<Option<ClientToServerPacket>> {
-    let (message, parsed_length) = loop {
-        // attempt to parse a packet first, so that if we get multiple
-        // packets at a time, we can actually parse both of them instead of
-        // having to wait for more data from the socket first
-        match PacketDeserializerContext::new(buf).parse() {
-            Ok(message) => break message,
-            Err(PacketDeserializeError::UnknownPacketLength) => {}
-            Err(PacketDeserializeError::MismatchedPacketLength {
-                buffer_length,
-                expected_from_header,
-            }) if buffer_length < expected_from_header => {}
-            Err(err) => return Err(err.into()),
-        }
-
-        match stream.read_buf(buf).await? {
-            0 if buf.is_empty() => return Ok(None),
-            // getting to this read means we have an incomplete packet, but
-            // the connection was closed, so the packet can never be
-            // finished. this is an error condition.
-            0 => return Err(ServerError::ConnectionReset),
-            _ => {}
-        }
-    };
-
-    buf.drain(..parsed_length);
-    Ok(Some(message))
-}
-
 impl ClientDeserializerContext {
     async fn run_message_loop(&mut self) -> ServerResult<()> {
-        while let Some(message) = read_message(&mut self.stream, &mut self.read_buffer).await? {
+        while let Some(message) = read_whole_packet(&mut self.stream, &mut self.read_buffer).await?
+        {
             self.message_sender
                 .send(DeserializerMessage::Message {
                     id: self.connection_id,
@@ -187,16 +140,8 @@ impl ClientSerializerContext {
             match message {
                 SerializerMessage::Shutdown => break,
                 SerializerMessage::Message { message } => {
-                    PacketSerializerContext::new(&mut self.write_buffer).serialize(&message)?;
-                    println!(
-                        "#{}: serialized {:?} to {:?}",
-                        self.connection_id, message, self.write_buffer
-                    );
-                    self.stream
-                        .write_u32(self.write_buffer.len() as u32 + 4)
-                        .await?;
-                    self.stream.write_all(&mut self.write_buffer).await?;
-                    self.write_buffer.clear();
+                    write_whole_message(&mut self.stream, &mut self.write_buffer, &message).await?;
+                    println!("#{}: serialized {:?}", self.connection_id, message);
                 }
             }
         }
