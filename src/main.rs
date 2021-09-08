@@ -7,7 +7,7 @@ pub mod server;
 #[derive(Debug, StructOpt)]
 pub enum RunArguments {
     Server {},
-    Client {},
+    Client { username: Option<String> },
 }
 
 #[tokio::main]
@@ -20,9 +20,11 @@ async fn main() {
                 Err(err) => eprintln!("{:?}", err),
             }
         }
-        RunArguments::Client {} => match client::run_client().await {
-            Ok(_) => {}
-            Err(err) => eprintln!("{:?}", err),
-        },
+        RunArguments::Client { username } => {
+            match client::run_client(username.as_ref().map(|s| &**s)).await {
+                Ok(_) => {}
+                Err(err) => eprintln!("{:?}", err),
+            }
+        }
     }
 }

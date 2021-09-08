@@ -8,7 +8,10 @@ edition = "2018"
 [dependencies]
 structopt = { version = "0.3", default-features = false }
 tokio = { version = "1.11.0", features = ["full"] }
-tui = "0.16"
-termion = "1.5"
 log = "0.4"
 env_logger = "0.8.4"
+futures = "0.3"
+
+[dependencies.crossterm]
+version = "0.21"
+features = ["event-stream"]

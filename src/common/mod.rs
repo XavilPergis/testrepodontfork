@@ -1,14 +1,14 @@
-mod deserialize_packet;
+mod context;
+mod impls;
 pub mod packet;
-mod serialize_packet;
 
 pub type CommonResult<T> = Result<T, CommonError>;
 
 #[derive(Debug)]
 pub enum CommonError {
     Io(std::io::Error),
-    Deserialize(deserialize_packet::PacketDeserializeError),
-    Serialize(serialize_packet::PacketSerializeError),
+    Deserialize(packet::PacketDeserializeError),
+    Serialize(packet::PacketSerializeError),
     ConnectionReset,
 }
 
@@ -18,14 +18,14 @@ impl From<std::io::Error> for CommonError {
     }
 }
 
-impl From<deserialize_packet::PacketDeserializeError> for CommonError {
-    fn from(err: deserialize_packet::PacketDeserializeError) -> Self {
+impl From<packet::PacketDeserializeError> for CommonError {
+    fn from(err: packet::PacketDeserializeError) -> Self {
         CommonError::Deserialize(err)
     }
 }
 
-impl From<serialize_packet::PacketSerializeError> for CommonError {
-    fn from(err: serialize_packet::PacketSerializeError) -> Self {
+impl From<packet::PacketSerializeError> for CommonError {
+    fn from(err: packet::PacketSerializeError) -> Self {
         CommonError::Serialize(err)
     }
 }

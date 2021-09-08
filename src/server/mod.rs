@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::{
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
@@ -22,7 +22,7 @@ impl<T: Into<CommonError>> From<T> for ServerError {
 
 pub type ServerResult<T> = Result<T, ServerError>;
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SerializerMessage {
     Shutdown,
     Message { message: ServerToClientPacket },
@@ -154,6 +154,7 @@ impl ClientSerializerContext {
 struct ServerContext {
     current_client_id: u64,
     connections: HashMap<u64, ClientConnection>,
+    logged_in: HashSet<u64>,
     running: bool,
 }
 
@@ -162,6 +163,7 @@ impl ServerContext {
         Self {
             current_client_id: 0,
             connections: HashMap::new(),
+            logged_in: HashSet::new(),
             running: true,
         }
     }
@@ -171,82 +173,104 @@ impl ServerContext {
     }
 
     fn handle_packet(&mut self, id: u64, packet: ClientToServerPacket) {
-        match packet {
-            ClientToServerPacket::Connect => {
-                for (&other_id, connection) in self.connections.iter() {
-                    connection
-                        .server_sender
-                        .send(if id == other_id {
-                            SerializerMessage::Message {
-                                message: ServerToClientPacket::ConnectAck { connection_id: id },
-                            }
-                        } else {
-                            SerializerMessage::Message {
-                                message: ServerToClientPacket::PeerConnected { peer_id: id },
-                            }
-                        })
-                        .unwrap();
+        match packet.kind {
+            ClientToServerPacketKind::Connect { username } => {
+                self.connections.get_mut(&id).unwrap().username = Some(username);
+                for (&other_id, connection) in self.connections.iter_mut() {
+                    if !self.logged_in.contains(&other_id) && id != other_id {
+                        continue;
+                    }
+
+                    if id == other_id {
+                        connection.send_response(
+                            packet.rid,
+                            ServerToClientResponsePacket::ConnectAck { connection_id: id },
+                        );
+                    } else {
+                        connection.send_packet(ServerToClientPacket::PeerConnected { peer_id: id });
+                    }
+                }
+                self.logged_in.insert(id);
+            }
+
+            ClientToServerPacketKind::Message { message } => {
+                if !self.logged_in.contains(&id) {
+                    return;
+                }
+                for (&other_id, connection) in self.connections.iter_mut() {
+                    if !self.logged_in.contains(&other_id) {
+                        continue;
+                    }
+
+                    if id == other_id {
+                        connection
+                            .send_response(packet.rid, ServerToClientResponsePacket::MessageAck {});
+                    } else {
+                        connection.send_packet(ServerToClientPacket::PeerMessage {
+                            peer_id: id,
+                            message: message.clone(),
+                        });
+                    }
                 }
             }
 
-            ClientToServerPacket::Disconnect => {
-                for (&other_id, connection) in self.connections.iter() {
-                    connection
-                        .server_sender
-                        .send(if id == other_id {
-                            SerializerMessage::Message {
-                                message: ServerToClientPacket::DisconnectAck,
-                            }
-                        } else {
-                            SerializerMessage::Message {
-                                message: ServerToClientPacket::PeerDisonnected { peer_id: id },
-                            }
-                        })
-                        .unwrap();
+            ClientToServerPacketKind::Shutdown {} => {
+                if !self.logged_in.contains(&id) {
+                    return;
                 }
-            }
-
-            ClientToServerPacket::Message { message } => {
-                for (&other_id, connection) in self.connections.iter() {
-                    connection
-                        .server_sender
-                        .send(if id == other_id {
-                            SerializerMessage::Message {
-                                message: ServerToClientPacket::MessageAck,
-                            }
-                        } else {
-                            SerializerMessage::Message {
-                                message: ServerToClientPacket::PeerMessage {
-                                    peer_id: id,
-                                    message: message.clone(),
-                                },
-                            }
-                        })
-                        .unwrap();
-                }
-            }
-
-            ClientToServerPacket::Shutdown => {
                 self.running = false;
             }
 
-            ClientToServerPacket::RequestPeerListing => {
-                self.connections[&id]
-                    .server_sender
-                    .send(SerializerMessage::Message {
-                        message: ServerToClientPacket::PeerListingResponse {
-                            peers: self
-                                .connections
-                                .keys()
-                                .copied()
-                                .filter(|&key| key != id)
-                                .collect(),
-                        },
-                    })
-                    .unwrap();
+            ClientToServerPacketKind::RequestPeerListing {} => {
+                if !self.logged_in.contains(&id) {
+                    return;
+                }
+
+                let peers = self
+                    .connections
+                    .keys()
+                    .copied()
+                    .filter(|&key| key != id && self.logged_in.contains(&key))
+                    .collect();
+
+                self.connections.get_mut(&id).unwrap().send_response(
+                    packet.rid,
+                    ServerToClientResponsePacket::PeerListingResponse { peers },
+                );
             }
 
-            ClientToServerPacket::RequestPeerInfo { peer_ids: _ } => {}
+            ClientToServerPacketKind::RequestPeerInfo { peer_ids } => {
+                if !self.logged_in.contains(&id) {
+                    return;
+                }
+                // FIXME: potential for DOS if the user sends a long list of peer ids that are all the same
+                let mut peer_infos = HashMap::with_capacity(peer_ids.len());
+                for &peer_id in peer_ids.iter() {
+                    if !self.logged_in.contains(&peer_id) {
+                        log::warn!(
+                            "#{}: requested info on connected but not-logged-in peer #{}",
+                            id,
+                            peer_id
+                        );
+                        continue;
+                    }
+                    if let Some(peer_connection) = self.connections.get(&peer_id) {
+                        peer_infos.insert(
+                            peer_id,
+                            PeerInfo {
+                                username: peer_connection.username.clone(),
+                            },
+                        );
+                    } else {
+                        log::warn!("#{}: requested info on non-existant peer #{}", id, peer_id);
+                    }
+                }
+
+                self.connections.get_mut(&id).unwrap().send_response(
+                    packet.rid,
+                    ServerToClientResponsePacket::PeerInfoResponse { peers: peer_infos },
+                );
+            }
         }
     }
 
@@ -262,6 +286,15 @@ impl ServerContext {
             DeserializerMessage::Connect { id: _ } => {}
             DeserializerMessage::Disconnect { id } => {
                 self.connections.remove(&id);
+                if !self.logged_in.contains(&id) {
+                    return;
+                }
+                for (&other_id, connection) in self.connections.iter_mut() {
+                    if !self.logged_in.contains(&other_id) {
+                        continue;
+                    }
+                    connection.send_packet(ServerToClientPacket::PeerDisonnected { peer_id: id });
+                }
             }
         }
     }
@@ -302,11 +335,30 @@ fn create_client_connection(
 pub struct ClientConnection {
     id: u64,
     server_sender: mpsc::UnboundedSender<SerializerMessage>,
+    username: Option<String>,
 }
 
 impl ClientConnection {
     pub fn new(id: u64, server_sender: mpsc::UnboundedSender<SerializerMessage>) -> Self {
-        Self { id, server_sender }
+        Self {
+            id,
+            server_sender,
+            username: None,
+        }
+    }
+
+    fn send_response(&mut self, rid: ResponseId, packet: ServerToClientResponsePacket) {
+        self.server_sender
+            .send(SerializerMessage::Message {
+                message: ServerToClientPacket::Response { rid, packet },
+            })
+            .unwrap();
+    }
+
+    fn send_packet(&mut self, packet: ServerToClientPacket) {
+        self.server_sender
+            .send(SerializerMessage::Message { message: packet })
+            .unwrap();
     }
 }
 
