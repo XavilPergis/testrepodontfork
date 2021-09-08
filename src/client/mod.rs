@@ -10,14 +10,6 @@ use tokio::{
 };
 
 use self::backend::{EventsBackend, TerminalBackend};
-// use tui::{
-//     backend::{Backend, CrosstermBackend},
-//     layout::{Alignment, Constraint, Direction, Layout, Rect},
-//     style::{Color, Modifier, Style},
-//     text::{Span, Spans, Text},
-//     widgets::{Block, Borders, List, ListItem, Paragraph, Widget, Wrap},
-//     Frame, Terminal,
-// };
 
 pub mod backend;
 pub mod ui;
@@ -40,15 +32,6 @@ impl<T: Into<CommonError>> From<T> for ClientError {
 }
 
 pub type ClientResult<T> = Result<T, ClientError>;
-
-// async fn read_messages(mut stream: OwnedReadHalf) -> ClientResult<()> {
-//     loop {
-//         let message = read_message(&mut stream).await?.unwrap();
-//         println!("got {:?}", message);
-//     }
-
-//     Ok(())
-// }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ClientContextEvent {
@@ -172,41 +155,6 @@ impl ClientContext {
     async fn write_packet(&mut self, packet: &ClientToServerPacket) -> CommonResult<()> {
         write_whole_packet(&mut self.stream, &mut self.write_buf, packet).await
     }
-
-    // async fn expect_packet(&mut self) -> ClientResult<ServerToClientPacket> {
-    //     match self.inbound.recv().await {
-    //         Some(value) => Ok(value),
-    //         None => Err(ClientError::UnexpectedEndOfStream),
-    //     }
-    // }
-
-    // async fn next_packet(&mut self) -> Option<ServerToClientPacket> {
-    //     self.inbound.recv().await
-    // }
-
-    // async fn negotiate_disconnection(&mut self) -> ClientResult<()> {
-    //     self.write_packet(&ClientToServerPacket::Disconnect).await?;
-    //     match self.expect_packet().await? {
-    //         ServerToClientPacket::DisconnectAck => {}
-    //         _ => return Err(ClientError::NoDisconnectAck),
-    //     }
-
-    //     log::info!("disconnected from {} peers", self.peer_ids.len());
-    //     Ok(())
-    // }
-
-    // async fn send_message(&mut self, message: &str) -> ClientResult<()> {
-    //     self.write_packet(&ClientToServerPacket::Message {
-    //         message: message.into(),
-    //     })
-    //     .await?;
-    //     match self.expect_packet().await? {
-    //         ServerToClientPacket::MessageAck => {}
-    //         _ => return Err(ClientError::NoMessageAck),
-    //     }
-
-    //     Ok(())
-    // }
 }
 
 async fn packet_read_loop(
@@ -290,21 +238,6 @@ enum AppEvent {
 enum AppCommand {
     AddChatLine(ChatLine),
 }
-
-// trait AppLayer<T, B: TerminalBackend> {
-//     fn update(&mut self, shared: &mut T, event: AppEvent) -> ClientResult<ControlFlow>;
-//     fn draw(&self, shared: &mut T, terminal: &mut B) -> ClientResult<()>;
-// }
-
-// impl<B: TerminalBackend> AppLayer<SharedData, B> for MainState {
-//     fn update(&mut self, shared: &mut SharedData, event: AppEvent) -> ClientResult<ControlFlow> {
-//         Ok(ControlFlow::Continue)
-//     }
-
-//     fn draw(&self, shared: &mut SharedData, terminal: &mut B) -> ClientResult<()> {
-//         todo!()
-//     }
-// }
 
 struct App {
     client: ClientContext,
@@ -591,62 +524,6 @@ impl App {
         mut events: E,
         username: Option<&str>,
     ) -> ClientResult<()> {
-        // if let Some(username) = username {
-        //     self.current_username_text.extend(username.chars());
-        // } else {
-        //     self.redraw_login_ui(terminal)?;
-
-        //     loop {
-        //         let event = tokio::select! {
-        //             input_event = events.poll_event() => {
-        //                 AppEvent::Input(input_event?.unwrap())iter
-        //             }
-        //             socket_event = self.client.next_packet() => {
-        //                 AppEvent::IncomingPacket(socket_event?.unwrap())
-        //             }
-        //         };
-        //         match self.handle_event_login(event).await? {
-        //             ControlFlow::Exit => break,
-        //             ControlFlow::Continue => {}
-        //             ControlFlow::Pop => todo!(),
-        //             ControlFlow::Push() => todo!(),
-        //         }
-        //         self.redraw_login_ui(terminal)?;
-        //     }
-        // }
-
-        // let (app_event_tx, mut app_input_event_rx) = mpsc::unbounded_channel();
-        // let (app_output_event_tx, mut app_output_event_rx) = mpsc::unbounded_channel();
-
-        // let main_input_tx = app_event_tx.clone();
-        // let (read_stream, write_stream) = stream.into_split();
-        // tokio::spawn(async move {
-        //     let (packet_tx, mut packet_rx) = mpsc::unbounded_channel();
-        //     tokio::spawn(async move {
-        //         if let Err(err) = packet_read_loop(read_stream, packet_tx).await {
-        //             eprintln!("packet rx error: {:?}", err);
-        //         }
-        //     });
-
-        //     loop {
-        //         main_input_tx.send(tokio::select! {
-        //             input_event = events.poll_event() => {
-        //                 AppInputEvent::Input(match input_event {
-        //                     Ok(Some(event)) => event,
-        //                     Ok(None) => break,
-        //                     Err(err) => {
-        //                         eprintln!("terminal event rx error: {:?}", err);
-        //                         break;
-        //                     },
-        //                 })
-        //             }
-        //             packet = packet_rx.recv() => {
-        //                 AppInputEvent::IncomingPacket(packet.unwrap())
-        //             }
-        //         });
-        //     }
-        // });
-
         let username = username.unwrap_or("[unknown]").into();
 
         let connect_sender = self.command_tx.clone();
@@ -682,8 +559,6 @@ impl App {
 
             self.redraw_message_ui(terminal)?;
         }
-
-        // self.client.negotiate_disconnection().await?;
 
         Ok(())
     }
