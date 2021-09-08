@@ -123,16 +123,6 @@ fn translate_crossterm_event(event: Event) -> TerminalEvent {
 
 impl EventsBackend for CrosstermEventsBackend {
     fn poll_event(&mut self) -> DynamicFuture<EventPollResult> {
-        // Box::pin(async move {
-        //     Ok(Some(TerminalEvent::Key(TerminalKeyEvent {
-        //         kind: KeyEventKind::Enter,
-        //         modifiers: KeyModifiers {
-        //             control: true,
-        //             shift: false,
-        //             alt: false,
-        //         },
-        //     })))
-        // })
         Box::pin(async move {
             match self.event_stream.next().await {
                 Some(Ok(event)) => Ok(Some(translate_crossterm_event(event))),
@@ -240,49 +230,3 @@ impl<W: Write + QueueableCommand> TerminalBackend for CrosstermBackend<W> {
         Ok(TerminalSize { columns, rows })
     }
 }
-
-// #[derive(Debug)]
-// pub struct LayoutContext {}
-
-// #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-// pub enum AxisConstraint {
-//     None,
-//     Min(u16),
-//     Max(u16),
-// }
-
-// #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-// pub struct BoxConstraints {
-//     width: AxisConstraint,
-//     height: AxisConstraint,
-// }
-
-// impl Default for BoxConstraints {
-//     fn default() -> Self {
-//         Self {
-//             width: AxisConstraint::None,
-//             height: AxisConstraint::None,
-//         }
-//     }
-// }
-
-// pub trait Renderable {
-//     fn layout_size(&self, ctx: &mut LayoutContext, constraints: BoxConstraints) -> TerminalRect;
-//     fn layout_position(&self, ctx: &mut LayoutContext, constraints: BoxConstraints)
-//         -> TerminalRect;
-// }
-
-// impl<R: Renderable> Renderable for Vec<R> {
-//     fn layout_size(&self, ctx: &mut LayoutContext, constraints: BoxConstraints) -> TerminalRect {
-//         for item in self.iter() {
-//             let layout = item.layout_size(ctx, BoxConstraints::default());
-//         }
-//         todo!()
-//     }
-// }
-
-// impl Renderable for String {
-//     fn layout(&self, ctx: &mut LayoutContext, constraints: BoxConstraints) -> TerminalRect {
-//         todo!()
-//     }
-// }

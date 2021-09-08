@@ -15,7 +15,7 @@ macro_rules! gen_numeric_codec {
                 &self,
                 ctx: &mut PacketSerializerContext<'buf>,
             ) -> PacketSerializeResult<()> {
-                ctx.write_byte_sequence(self.to_be_bytes());
+                ctx.write_byte_sequence(self.to_be_bytes())?;
                 Ok(())
             }
 
@@ -45,7 +45,7 @@ impl PacketCodec for String {
         ctx: &mut PacketSerializerContext<'buf>,
     ) -> PacketSerializeResult<()> {
         ctx.serialize(&(self.len() as u32))?;
-        ctx.write_byte_sequence(self.as_bytes().iter().copied());
+        ctx.write_byte_sequence(self.as_bytes().iter().copied())?;
         Ok(())
     }
 
