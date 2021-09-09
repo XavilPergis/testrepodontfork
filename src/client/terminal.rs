@@ -4,16 +4,37 @@ pub struct TerminalPos {
     pub row: u16,
 }
 
+impl std::ops::Add for TerminalPos {
+    type Output = TerminalPos;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        TerminalPos {
+            row: self.row + rhs.row,
+            column: self.column + rhs.column,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct TerminalSize {
-    pub columns: u16,
-    pub rows: u16,
+    pub width: u16,
+    pub height: u16,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct TerminalRect {
     pub start: TerminalPos,
     pub end: TerminalPos,
+}
+
+impl TerminalRect {
+    pub fn width(&self) -> u16 {
+        self.end.column - self.start.column
+    }
+
+    pub fn height(&self) -> u16 {
+        self.end.row - self.start.row
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -104,4 +125,10 @@ pub enum Color {
     Grey,
     Rgb { r: u8, g: u8, b: u8 },
     AnsiValue(u8),
+}
+
+impl Default for Color {
+    fn default() -> Self {
+        Color::Reset
+    }
 }

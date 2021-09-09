@@ -85,6 +85,280 @@ struct App {
     command_rx: mpsc::UnboundedReceiver<AppCommand>,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
+pub struct TerminalCell {
+    pub foreground_color: Color,
+    pub background_color: Color,
+    pub character: Option<char>,
+}
+
+pub struct Frame<'buf> {
+    root_size: TerminalSize,
+    root_buffer: &'buf mut [TerminalCell],
+
+    frame_bounds: TerminalRect,
+}
+
+impl<'buf> Frame<'buf> {
+    pub fn root(size: TerminalSize, buffer: &'buf mut [TerminalCell]) -> Self {
+        Self {
+            root_size: size,
+            root_buffer: buffer,
+            frame_bounds: TerminalRect {
+                end: TerminalPos {
+                    column: size.width,
+                    row: size.height,
+                },
+                ..TerminalRect::default()
+            },
+        }
+    }
+
+    pub fn with_view(&'buf mut self, area: TerminalRect, func: impl FnOnce(Frame<'buf>)) {
+        func(Self {
+            root_size: self.root_size,
+            root_buffer: self.root_buffer,
+            frame_bounds: TerminalRect {
+                start: self.frame_bounds.start + area.start,
+                end: self.frame_bounds.end + area.end,
+            },
+        })
+    }
+
+    fn buffer_index(&self, offset: TerminalPos) -> usize {
+        let root_offset = offset + self.frame_bounds.start;
+        debug_assert!(root_offset.row <= self.frame_bounds.end.row);
+        debug_assert!(root_offset.column <= self.frame_bounds.end.column);
+        root_offset.row as usize * self.root_size.width as usize + root_offset.column as usize
+    }
+
+    pub fn put(&mut self, offset: TerminalPos, cell: TerminalCell) {
+        self.root_buffer[self.buffer_index(offset)] = cell;
+    }
+
+    pub fn get(&self, offset: TerminalPos) -> &TerminalCell {
+        &self.root_buffer[self.buffer_index(offset)]
+    }
+
+    pub fn width(&self) -> u16 {
+        self.frame_bounds.width()
+    }
+
+    pub fn height(&self) -> u16 {
+        self.frame_bounds.height()
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum AxisConstraint {
+    None,
+    Exactly(u16),
+    Min(u16),
+    Max(u16),
+}
+
+impl AxisConstraint {
+    pub fn max_bound(&self) -> Option<u16> {
+        match self {
+            AxisConstraint::Min(_) | AxisConstraint::None => None,
+            AxisConstraint::Max(axis) | AxisConstraint::Exactly(axis) => Some(*axis),
+        }
+    }
+
+    pub fn min_bound(&self) -> Option<u16> {
+        match self {
+            AxisConstraint::Max(_) | AxisConstraint::None => None,
+            AxisConstraint::Min(axis) | AxisConstraint::Exactly(axis) => Some(*axis),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BoxConstraints {
+    width: AxisConstraint,
+    height: AxisConstraint,
+}
+
+impl Default for BoxConstraints {
+    fn default() -> Self {
+        Self {
+            width: AxisConstraint::None,
+            height: AxisConstraint::None,
+        }
+    }
+}
+
+pub struct WidgetContext {}
+
+pub trait Widget: std::fmt::Debug {
+    fn layout(&mut self, constraints: BoxConstraints) -> TerminalSize;
+    fn render(&mut self, frame: Frame<'_>);
+}
+
+fn apply_constraint(axis: u16, constraint: AxisConstraint) -> (bool, u16) {
+    match constraint {
+        AxisConstraint::None => (false, axis),
+        AxisConstraint::Min(min) => (min > axis, u16::max(axis, min)),
+        AxisConstraint::Max(max) => (axis > max, u16::min(axis, max)),
+        AxisConstraint::Exactly(value) => (axis != value, value),
+    }
+}
+
+fn apply_constraints(size: TerminalSize, constraints: BoxConstraints) -> TerminalSize {
+    TerminalSize {
+        height: apply_constraint(size.height, constraints.height).1,
+        width: apply_constraint(size.width, constraints.width).1,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TextWidget<'a> {
+    text: &'a str,
+    computed_size: Option<TerminalSize>,
+    computed_lines: Vec<&'a str>,
+}
+
+impl<'a> TextWidget<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            computed_size: None,
+            computed_lines: Vec::new(),
+        }
+    }
+}
+
+impl<'a> Widget for TextWidget<'a> {
+    fn layout(&mut self, constraints: BoxConstraints) -> TerminalSize {
+        let mut bounds = TerminalSize {
+            width: 0,
+            height: 1,
+        };
+
+        let max_width = constraints.width.max_bound();
+
+        let mut line_start = 0;
+        let mut current_pos = TerminalPos::default();
+        for (idx, ch) in self.text.char_indices() {
+            match ch {
+                '\n' => {
+                    current_pos.row += 1;
+                    current_pos.column = 0;
+                    bounds.height = u16::max(bounds.height, current_pos.row);
+                    self.computed_lines
+                        .push(self.text[line_start..idx].trim_end());
+                    line_start = idx + 1;
+                }
+                ch if ch.is_whitespace() => {
+                    current_pos.column += 1;
+                }
+                _ => {
+                    current_pos.column += 1;
+                    if max_width
+                        .map(|max| current_pos.column > max)
+                        .unwrap_or(false)
+                    {
+                        current_pos.row += 1;
+                        current_pos.column = 0;
+                        bounds.height = u16::max(bounds.height, current_pos.row);
+                        self.computed_lines
+                            .push(&self.text[line_start..idx].trim_end());
+                        line_start = idx + 1;
+                    } else {
+                        bounds.width = u16::max(bounds.width, current_pos.column);
+                    }
+                }
+            }
+        }
+        self.computed_lines
+            .push(&self.text[line_start..].trim_end());
+
+        bounds = apply_constraints(bounds, constraints);
+        self.computed_size = Some(bounds);
+        bounds
+    }
+
+    fn render(&mut self, mut frame: Frame<'_>) {
+        for (row, line) in self.computed_lines.iter().enumerate() {
+            for (column, ch) in line.chars().enumerate() {
+                frame.put(
+                    TerminalPos {
+                        column: column as u16,
+                        row: row as u16,
+                    },
+                    TerminalCell {
+                        character: Some(ch),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct VerticalListWidget<W> {
+    children: Vec<W>,
+    computed_sizes: Vec<TerminalSize>,
+    computed_size: Option<TerminalSize>,
+}
+
+impl<W: Widget> Widget for VerticalListWidget<W> {
+    fn layout(&mut self, constraints: BoxConstraints) -> TerminalSize {
+        let mut total_height = 0;
+        let mut max_width = 0;
+        for child in self.children.iter_mut().rev() {
+            // don't layout children we can't see!
+            if constraints
+                .height
+                .max_bound()
+                .map(|max| total_height > max)
+                .unwrap_or(false)
+            {
+                break;
+            }
+
+            let child_size = child.layout(BoxConstraints {
+                height: AxisConstraint::None,
+                ..constraints
+            });
+            total_height += child_size.height;
+            max_width = u16::max(max_width, child_size.width);
+            self.computed_sizes.push(child_size);
+        }
+
+        let mut bounds = TerminalSize {
+            width: max_width,
+            height: total_height,
+        };
+
+        bounds = apply_constraints(bounds, constraints);
+        self.computed_size = Some(bounds);
+        bounds
+    }
+
+    fn render(&mut self, mut frame: Frame<'_>) {
+        let mut current_base = self.computed_size.unwrap().height;
+        for (child, &child_size) in
+            Iterator::zip(self.children.iter_mut().rev(), self.computed_sizes.iter()).rev()
+        {
+            let foo = TerminalRect {
+                start: TerminalPos {
+                    column: 0,
+                    row: current_base,
+                },
+                end: TerminalPos {
+                    column: self.computed_size.unwrap().width,
+                    row: current_base + child_size.height,
+                },
+            };
+            frame.with_view(foo, move |frame2| {
+                child.render(frame2);
+            });
+        }
+    }
+}
+
 impl App {
     fn new(client: ConnectionHandler) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
@@ -97,131 +371,159 @@ impl App {
         }
     }
 
-    fn render_peer<B: TerminalBackend>(&self, terminal: &mut B, peer_id: u64) -> ClientResult<()> {
-        let (marker, color) = match peer_id == self.client.connection_id().unwrap() {
-            true => ("~", Color::Cyan),
-            false => ("", Color::Green),
-        };
+    // fn render_peer_2(&self, area: TerminalRect, peer_id: u64) -> ClientResult<Frame> {
+    //     let (marker, color) = match peer_id == self.client.connection_id().unwrap() {
+    //         true => ("~", Color::Cyan),
+    //         false => ("", Color::Green),
+    //     };
 
-        write!(terminal.writer(), "<")?;
-        terminal.submit_set_foreground_color(color)?;
-        write!(terminal.writer(), "{}", marker)?;
+    //     write!(terminal.writer(), "<")?;
+    //     terminal.submit_set_foreground_color(color)?;
+    //     write!(terminal.writer(), "{}", marker)?;
 
-        match self.client.connection_info(peer_id) {
-            Some(info) => match &info.username {
-                Some(username) => write!(terminal.writer(), "{}", username)?,
-                None => write!(terminal.writer(), "?{}", peer_id)?,
-            },
-            None => {
-                write!(terminal.writer(), "!{}", peer_id)?;
-            }
-        }
+    //     match self.client.connection_info(peer_id) {
+    //         Some(info) => match &info.username {
+    //             Some(username) => write!(terminal.writer(), "{}", username)?,
+    //             None => write!(terminal.writer(), "?{}", peer_id)?,
+    //         },
+    //         None => {
+    //             write!(terminal.writer(), "!{}", peer_id)?;
+    //         }
+    //     }
 
-        terminal.submit_set_foreground_color(Color::Reset)?;
-        write!(terminal.writer(), ">")?;
+    //     terminal.submit_set_foreground_color(Color::Reset)?;
+    //     write!(terminal.writer(), ">")?;
 
-        Ok(())
-    }
+    //     Ok(frame)
+    // }
 
-    fn render_chat_lines<B: TerminalBackend>(
-        &self,
-        terminal: &mut B,
-        base: TerminalPos,
-        lines: usize,
-    ) -> ClientResult<()> {
-        for (row, line) in last_n(lines, &self.chat_lines).iter().enumerate() {
-            terminal.submit_goto(TerminalPos {
-                row: base.row + row as u16,
-                column: base.column,
-            })?;
-            match line {
-                ChatLine::Text { peer_id, message } => {
-                    self.render_peer(terminal, *peer_id)?;
-                    write!(terminal.writer(), ": {}", message)?;
-                }
-                ChatLine::ConnectInfo {
-                    connection_id,
-                    peer_ids,
-                } => {
-                    terminal.submit_set_foreground_color(Color::Blue)?;
-                    write!(terminal.writer(), "---")?;
-                    terminal.submit_set_foreground_color(Color::Reset)?;
+    // fn render_peer<B: TerminalBackend>(&self, terminal: &mut B, peer_id: u64) -> ClientResult<()> {
+    //     let (marker, color) = match peer_id == self.client.connection_id().unwrap() {
+    //         true => ("~", Color::Cyan),
+    //         false => ("", Color::Green),
+    //     };
 
-                    write!(terminal.writer(), " connected as ")?;
-                    self.render_peer(terminal, *connection_id)?;
+    //     write!(terminal.writer(), "<")?;
+    //     terminal.submit_set_foreground_color(color)?;
+    //     write!(terminal.writer(), "{}", marker)?;
 
-                    if peer_ids.len() > 0 {
-                        write!(terminal.writer(), " to ")?;
-                        self.render_peer(terminal, peer_ids[0])?;
+    //     match self.client.connection_info(peer_id) {
+    //         Some(info) => match &info.username {
+    //             Some(username) => write!(terminal.writer(), "{}", username)?,
+    //             None => write!(terminal.writer(), "?{}", peer_id)?,
+    //         },
+    //         None => {
+    //             write!(terminal.writer(), "!{}", peer_id)?;
+    //         }
+    //     }
 
-                        for peer_id in &peer_ids[1..] {
-                            write!(terminal.writer(), ", ")?;
-                            self.render_peer(terminal, *peer_id)?;
-                        }
-                    }
+    //     terminal.submit_set_foreground_color(Color::Reset)?;
+    //     write!(terminal.writer(), ">")?;
 
-                    terminal.submit_set_foreground_color(Color::Blue)?;
-                    write!(terminal.writer(), " ---")?;
-                    terminal.submit_set_foreground_color(Color::Reset)?;
-                }
-                ChatLine::Connected { peer_id } => {
-                    terminal.submit_set_foreground_color(Color::Blue)?;
-                    write!(terminal.writer(), ">> ")?;
-                    terminal.submit_set_foreground_color(Color::Reset)?;
-                    self.render_peer(terminal, *peer_id)?;
-                    write!(terminal.writer(), " connected")?;
-                }
-                ChatLine::Disconnected { peer_id } => {
-                    terminal.submit_set_foreground_color(Color::Blue)?;
-                    write!(terminal.writer(), "<< ")?;
-                    terminal.submit_set_foreground_color(Color::Reset)?;
-                    self.render_peer(terminal, *peer_id)?;
-                    write!(terminal.writer(), " disconnected")?;
-                }
-            }
-        }
+    //     Ok(())
+    // }
 
-        Ok(())
-    }
+    // fn render_chat_lines<B: TerminalBackend>(
+    //     &self,
+    //     terminal: &mut B,
+    //     area: TerminalRect,
+    // ) -> ClientResult<impl Widget> {
+    //     for (row, line) in last_n(lines, &self.chat_lines).iter().enumerate() {
+    //         terminal.submit_goto(TerminalPos {
+    //             row: base.row + row as u16,
+    //             column: base.column,
+    //         })?;
+    //         match line {
+    //             ChatLine::Text { peer_id, message } => {
+    //                 self.render_peer(terminal, *peer_id)?;
+    //                 write!(terminal.writer(), ": {}", message)?;
+    //             }
+    //             ChatLine::ConnectInfo {
+    //                 connection_id,
+    //                 peer_ids,
+    //             } => {
+    //                 terminal.submit_set_foreground_color(Color::Blue)?;
+    //                 write!(terminal.writer(), "---")?;
+    //                 terminal.submit_set_foreground_color(Color::Reset)?;
 
-    fn render_chat_bar<B: TerminalBackend>(
-        &self,
-        terminal: &mut B,
-        base: TerminalPos,
-    ) -> ClientResult<()> {
-        terminal.submit_goto(TerminalPos {
-            row: base.row,
-            column: base.column,
-        })?;
+    //                 write!(terminal.writer(), " connected as ")?;
+    //                 self.render_peer(terminal, *connection_id)?;
 
-        terminal.submit_set_foreground_color(Color::Yellow)?;
-        write!(terminal.writer(), "=>")?;
-        terminal.submit_set_foreground_color(Color::Reset)?;
-        write!(terminal.writer(), " {}", self.current_message_text)?;
+    //                 if peer_ids.len() > 0 {
+    //                     write!(terminal.writer(), " to ")?;
+    //                     self.render_peer(terminal, peer_ids[0])?;
 
-        Ok(())
+    //                     for peer_id in &peer_ids[1..] {
+    //                         write!(terminal.writer(), ", ")?;
+    //                         self.render_peer(terminal, *peer_id)?;
+    //                     }
+    //                 }
+
+    //                 terminal.submit_set_foreground_color(Color::Blue)?;
+    //                 write!(terminal.writer(), " ---")?;
+    //                 terminal.submit_set_foreground_color(Color::Reset)?;
+    //             }
+    //             ChatLine::Connected { peer_id } => {
+    //                 terminal.submit_set_foreground_color(Color::Blue)?;
+    //                 write!(terminal.writer(), ">> ")?;
+    //                 terminal.submit_set_foreground_color(Color::Reset)?;
+    //                 self.render_peer(terminal, *peer_id)?;
+    //                 write!(terminal.writer(), " connected")?;
+    //             }
+    //             ChatLine::Disconnected { peer_id } => {
+    //                 terminal.submit_set_foreground_color(Color::Blue)?;
+    //                 write!(terminal.writer(), "<< ")?;
+    //                 terminal.submit_set_foreground_color(Color::Reset)?;
+    //                 self.render_peer(terminal, *peer_id)?;
+    //                 write!(terminal.writer(), " disconnected")?;
+    //             }
+    //         }
+    //     }
+
+    //     Ok(())
+    // }
+
+    // fn render_chat_bar<B: TerminalBackend>(
+    //     &self,
+    //     terminal: &mut B,
+    //     area: TerminalRect,
+    // ) -> ClientResult<()> {
+    //     terminal.submit_goto(TerminalPos {
+    //         row: area.start.row,
+    //         column: area.start.column,
+    //     })?;
+
+    //     terminal.submit_set_foreground_color(Color::Yellow)?;
+    //     write!(terminal.writer(), "=>")?;
+    //     terminal.submit_set_foreground_color(Color::Reset)?;
+    //     write!(terminal.writer(), " {}", self.current_message_text)?;
+
+    //     Ok(())
+    // }
+
+    fn build_widget_tree(&self) -> impl Widget + '_ {
+        TextWidget::new("hello!!!")
     }
 
     fn redraw_message_ui<B: TerminalBackend>(&self, terminal: &mut B) -> ClientResult<()> {
-        terminal.submit_clear()?;
-        terminal.submit_goto(TerminalPos { row: 0, column: 0 })?;
+        let mut widget = self.build_widget_tree();
 
-        let size = terminal.size()?;
+        widget.layout(BoxConstraints {
+            width: AxisConstraint::Max(terminal.size()?.width),
+            height: AxisConstraint::Max(terminal.size()?.height),
+        });
 
-        self.render_chat_lines(
-            terminal,
-            TerminalPos { row: 0, column: 0 },
-            size.rows as usize - 1,
-        )?;
-        self.render_chat_bar(
-            terminal,
-            TerminalPos {
-                row: size.rows - 1,
-                column: 0,
-            },
-        )?;
+        eprintln!("{:?}", widget);
 
-        terminal.flush()?;
+        let mut buffer = vec![
+            TerminalCell::default();
+            terminal.size()?.width as usize * terminal.size()?.height as usize
+        ]
+        .into_boxed_slice();
+
+        widget.render(Frame::root(terminal.size()?, &mut buffer));
+
+        terminal.redraw(&buffer)?;
 
         Ok(())
     }

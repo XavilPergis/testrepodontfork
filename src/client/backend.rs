@@ -11,19 +11,10 @@ use crate::client::{
     KeyEventKind, KeyModifiers, MouseButton, MouseEventKind, TerminalKeyEvent, TerminalMouseEvent,
 };
 
-use super::{ClientResult, Color, TerminalEvent, TerminalPos, TerminalSize};
+use super::{ClientResult, Color, Frame, TerminalCell, TerminalEvent, TerminalPos, TerminalSize};
 
 pub trait TerminalBackend {
-    type Writer: Write;
-    fn writer(&mut self) -> &mut Self::Writer;
-
-    fn submit_set_foreground_color(&mut self, color: Color) -> ClientResult<()>;
-    fn submit_set_background_color(&mut self, color: Color) -> ClientResult<()>;
-    fn submit_clear(&mut self) -> ClientResult<()>;
-    fn submit_goto(&mut self, pos: TerminalPos) -> ClientResult<()>;
-
-    fn flush(&mut self) -> ClientResult<()>;
-
+    fn redraw(&mut self, buffer: &[TerminalCell]) -> ClientResult<()>;
     fn size(&self) -> ClientResult<TerminalSize>;
 }
 
@@ -117,7 +108,10 @@ fn translate_crossterm_event(event: Event) -> TerminalEvent {
     match event {
         Event::Key(event) => TerminalEvent::Key(translate_key_event(event)),
         Event::Mouse(event) => TerminalEvent::Mouse(translate_mouse_event(event)),
-        Event::Resize(rows, columns) => TerminalEvent::Resize(TerminalSize { rows, columns }),
+        Event::Resize(rows, columns) => TerminalEvent::Resize(TerminalSize {
+            height: rows,
+            width: columns,
+        }),
     }
 }
 
@@ -190,43 +184,42 @@ fn translate_color(color: Color) -> crossterm::style::Color {
 }
 
 impl<W: Write + QueueableCommand> TerminalBackend for CrosstermBackend<W> {
-    type Writer = W;
-
-    fn submit_set_foreground_color(&mut self, color: Color) -> ClientResult<()> {
-        self.writer
-            .queue(crossterm::style::SetForegroundColor(translate_color(color)))?;
-        Ok(())
-    }
-
-    fn submit_set_background_color(&mut self, color: Color) -> ClientResult<()> {
-        self.writer
-            .queue(crossterm::style::SetForegroundColor(translate_color(color)))?;
-        Ok(())
-    }
-
-    fn submit_clear(&mut self) -> ClientResult<()> {
-        self.writer
-            .queue(crossterm::terminal::Clear(ClearType::All))?;
-        Ok(())
-    }
-
-    fn submit_goto(&mut self, pos: TerminalPos) -> ClientResult<()> {
-        self.writer
-            .queue(crossterm::cursor::MoveTo(pos.column, pos.row))?;
-        Ok(())
-    }
-
-    fn flush(&mut self) -> ClientResult<()> {
-        self.writer.flush()?;
-        Ok(())
-    }
-
-    fn writer(&mut self) -> &mut Self::Writer {
-        &mut self.writer
-    }
-
     fn size(&self) -> ClientResult<TerminalSize> {
         let (columns, rows) = crossterm::terminal::size()?;
-        Ok(TerminalSize { columns, rows })
+        Ok(TerminalSize {
+            width: columns,
+            height: rows,
+        })
+    }
+
+    fn redraw(&mut self, buffer: &[TerminalCell]) -> ClientResult<()> {
+        let mut prev_fg_color = Color::default();
+        let mut prev_bg_color = Color::default();
+
+        self.writer.queue(crossterm::cursor::Hide)?;
+        for row in 0..self.size()?.height {
+            self.writer.queue(crossterm::cursor::MoveTo(0, row))?;
+            for column in 0..self.size()?.width {
+                let cell = buffer[row as usize * self.size()?.width as usize + column as usize];
+                if cell.background_color != prev_bg_color {
+                    self.writer
+                        .queue(crossterm::style::SetBackgroundColor(translate_color(
+                            cell.background_color,
+                        )))?;
+                    prev_bg_color = cell.background_color;
+                }
+                if cell.foreground_color != prev_fg_color {
+                    self.writer
+                        .queue(crossterm::style::SetForegroundColor(translate_color(
+                            cell.foreground_color,
+                        )))?;
+                    prev_fg_color = cell.foreground_color;
+                }
+                write!(self.writer, "{}", cell.character.unwrap_or(' '))?;
+            }
+        }
+        self.writer.queue(crossterm::cursor::Show)?;
+
+        Ok(())
     }
 }
