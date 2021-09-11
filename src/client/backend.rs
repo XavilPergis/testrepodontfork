@@ -1,4 +1,4 @@
-use std::{io::Write, pin::Pin};
+use std::{io::Write, pin::Pin, sync::Arc};
 
 use crossterm::{
     event::{Event, EventStream},
@@ -6,12 +6,13 @@ use crossterm::{
     QueueableCommand,
 };
 use futures::{Future, StreamExt};
+use std::sync::RwLock;
 
 use crate::client::{
     KeyEventKind, KeyModifiers, MouseButton, MouseEventKind, TerminalKeyEvent, TerminalMouseEvent,
 };
 
-use super::{ClientResult, Color, Frame, TerminalCell, TerminalEvent, TerminalPos, TerminalSize};
+use super::{ClientResult, Color, TerminalCell, TerminalEvent, TerminalPos, TerminalSize};
 
 pub trait TerminalBackend {
     fn redraw(&mut self, buffer: &[TerminalCell]) -> ClientResult<()>;
@@ -28,14 +29,7 @@ pub trait EventsBackend: Send + Sync + 'static {
 
 pub struct CrosstermEventsBackend {
     event_stream: EventStream,
-}
-
-impl CrosstermEventsBackend {
-    pub fn new() -> Self {
-        Self {
-            event_stream: EventStream::new(),
-        }
-    }
+    current_size: Arc<RwLock<TerminalSize>>,
 }
 
 fn translate_crossterm_event(event: Event) -> TerminalEvent {
@@ -119,7 +113,15 @@ impl EventsBackend for CrosstermEventsBackend {
     fn poll_event(&mut self) -> DynamicFuture<EventPollResult> {
         Box::pin(async move {
             match self.event_stream.next().await {
-                Some(Ok(event)) => Ok(Some(translate_crossterm_event(event))),
+                Some(Ok(event)) => {
+                    match event {
+                        Event::Resize(width, height) => {
+                            *self.current_size.write().unwrap() = TerminalSize { width, height };
+                        }
+                        _ => {}
+                    }
+                    Ok(Some(translate_crossterm_event(event)))
+                }
                 Some(Err(err)) => Err(err),
                 None => Ok(None),
             }
@@ -129,10 +131,13 @@ impl EventsBackend for CrosstermEventsBackend {
 
 pub struct CrosstermBackend<W: Write + QueueableCommand> {
     writer: W,
+    current_size: Arc<RwLock<TerminalSize>>,
+    prev_size: TerminalSize,
+    prev_buffer: Box<[TerminalCell]>,
 }
 
 impl<W: Write + QueueableCommand> CrosstermBackend<W> {
-    pub fn new(mut writer: W) -> ClientResult<Self> {
+    pub fn new(mut writer: W) -> ClientResult<(Self, CrosstermEventsBackend)> {
         crossterm::terminal::enable_raw_mode()?;
 
         let prev_hook = std::panic::take_hook();
@@ -144,8 +149,22 @@ impl<W: Write + QueueableCommand> CrosstermBackend<W> {
             prev_hook(info);
         }));
 
+        let terminal_size = Arc::new(RwLock::new(get_terminal_size()?));
+
         writer.queue(crossterm::terminal::EnterAlternateScreen)?;
-        Ok(Self { writer })
+        let term = Self {
+            writer,
+            current_size: Arc::clone(&terminal_size),
+            prev_size: TerminalSize::default(),
+            prev_buffer: Vec::default().into_boxed_slice(),
+        };
+
+        let events = CrosstermEventsBackend {
+            current_size: terminal_size,
+            event_stream: EventStream::new(),
+        };
+
+        Ok((term, events))
     }
 }
 
@@ -183,42 +202,81 @@ fn translate_color(color: Color) -> crossterm::style::Color {
     }
 }
 
+fn get_terminal_size() -> ClientResult<TerminalSize> {
+    let (columns, rows) = crossterm::terminal::size()?;
+    Ok(TerminalSize {
+        width: columns,
+        height: rows,
+    })
+}
+
 impl<W: Write + QueueableCommand> TerminalBackend for CrosstermBackend<W> {
     fn size(&self) -> ClientResult<TerminalSize> {
-        let (columns, rows) = crossterm::terminal::size()?;
-        Ok(TerminalSize {
-            width: columns,
-            height: rows,
-        })
+        Ok(*self.current_size.read().unwrap())
     }
 
     fn redraw(&mut self, buffer: &[TerminalCell]) -> ClientResult<()> {
         let mut prev_fg_color = Color::default();
         let mut prev_bg_color = Color::default();
 
+        let size = self.size()?;
+
+        // full reset if the screen size changed
+        if size != self.prev_size {
+            self.prev_size = size;
+            self.writer
+                .queue(crossterm::terminal::Clear(ClearType::All))?;
+            self.prev_buffer = vec![
+                TerminalCell::default();
+                self.prev_size.width as usize * self.prev_size.height as usize
+            ]
+            .into_boxed_slice();
+        }
+
         self.writer.queue(crossterm::cursor::Hide)?;
-        for row in 0..self.size()?.height {
+        for row in 0..size.height {
             self.writer.queue(crossterm::cursor::MoveTo(0, row))?;
-            for column in 0..self.size()?.width {
-                let cell = buffer[row as usize * self.size()?.width as usize + column as usize];
-                if cell.background_color != prev_bg_color {
+            for column in 0..size.width {
+                let buf_index = row as usize * size.width as usize + column as usize;
+                let cell = buffer[buf_index];
+                // let prev_cell = self.prev_buffer[buf_index];
+
+                // if cell == prev_cell {
+                //     // continue;
+                // } else {
+                //     self.prev_buffer[buf_index] = cell;
+                //     self.writer
+                //         .queue(crossterm::style::SetBackgroundColor(translate_color(
+                //             Color::DarkGrey,
+                //         )))?;
+                //     // prev_bg_color = Color::Yellow;
+                // }
+
+                if cell.style.background_color != prev_bg_color {
                     self.writer
                         .queue(crossterm::style::SetBackgroundColor(translate_color(
-                            cell.background_color,
+                            cell.style.background_color,
                         )))?;
-                    prev_bg_color = cell.background_color;
+                    prev_bg_color = cell.style.background_color;
                 }
-                if cell.foreground_color != prev_fg_color {
+
+                if cell.style.foreground_color != prev_fg_color {
                     self.writer
                         .queue(crossterm::style::SetForegroundColor(translate_color(
-                            cell.foreground_color,
+                            cell.style.foreground_color,
                         )))?;
-                    prev_fg_color = cell.foreground_color;
+                    prev_fg_color = cell.style.foreground_color;
                 }
                 write!(self.writer, "{}", cell.character.unwrap_or(' '))?;
+                self.writer
+                    .queue(crossterm::style::SetBackgroundColor(translate_color(
+                        Color::Reset,
+                    )))?;
             }
         }
         self.writer.queue(crossterm::cursor::Show)?;
+
+        self.writer.flush()?;
 
         Ok(())
     }

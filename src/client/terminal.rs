@@ -4,15 +4,30 @@ pub struct TerminalPos {
     pub row: u16,
 }
 
-impl std::ops::Add for TerminalPos {
-    type Output = TerminalPos;
+macro_rules! gen_pos_add_impls {
+    ($([$impl_type:ty, $rhs_type:ty, $row:ident, $column:ident])+) => {
+        $(impl std::ops::Add<$rhs_type> for $impl_type {
+            type Output = TerminalPos;
 
-    fn add(self, rhs: Self) -> Self::Output {
-        TerminalPos {
-            row: self.row + rhs.row,
-            column: self.column + rhs.column,
-        }
-    }
+            fn add(self, rhs: $rhs_type) -> Self::Output {
+                TerminalPos {
+                    row: self.row + rhs.$row,
+                    column: self.column + rhs.$column,
+                }
+            }
+        })*
+    };
+}
+
+gen_pos_add_impls! {
+    [TerminalPos, TerminalPos, row, column]
+    [TerminalPos, &TerminalPos, row, column]
+    [&TerminalPos, TerminalPos, row, column]
+    [&TerminalPos, &TerminalPos, row, column]
+    [TerminalPos, TerminalSize, height, width]
+    [TerminalPos, &TerminalSize, height, width]
+    [&TerminalPos, TerminalSize, height, width]
+    [&TerminalPos, &TerminalSize, height, width]
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
