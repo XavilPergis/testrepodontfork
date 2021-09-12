@@ -9,7 +9,8 @@ use futures::{Future, StreamExt};
 use std::sync::RwLock;
 
 use crate::client::{
-    KeyEventKind, KeyModifiers, MouseButton, MouseEventKind, TerminalKeyEvent, TerminalMouseEvent,
+    terminal::TerminalScalar, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    TerminalKeyEvent, TerminalMouseEvent,
 };
 
 use super::{ClientResult, Color, TerminalCell, TerminalEvent, TerminalPos, TerminalSize};
@@ -92,8 +93,8 @@ fn translate_crossterm_event(event: Event) -> TerminalEvent {
                 crossterm::event::MouseEventKind::ScrollUp => MouseEventKind::ScrollUp,
             },
             location: TerminalPos {
-                column: event.column,
-                row: event.row,
+                column: event.column as TerminalScalar,
+                row: event.row as TerminalScalar,
             },
             modifiers: translate_modifiers(event.modifiers),
         }
@@ -103,8 +104,8 @@ fn translate_crossterm_event(event: Event) -> TerminalEvent {
         Event::Key(event) => TerminalEvent::Key(translate_key_event(event)),
         Event::Mouse(event) => TerminalEvent::Mouse(translate_mouse_event(event)),
         Event::Resize(rows, columns) => TerminalEvent::Resize(TerminalSize {
-            height: rows,
-            width: columns,
+            height: rows as TerminalScalar,
+            width: columns as TerminalScalar,
         }),
     }
 }
@@ -116,7 +117,10 @@ impl EventsBackend for CrosstermEventsBackend {
                 Some(Ok(event)) => {
                     match event {
                         Event::Resize(width, height) => {
-                            *self.current_size.write().unwrap() = TerminalSize { width, height };
+                            *self.current_size.write().unwrap() = TerminalSize {
+                                width: width as TerminalScalar,
+                                height: height as TerminalScalar,
+                            };
                         }
                         _ => {}
                     }
@@ -205,8 +209,8 @@ fn translate_color(color: Color) -> crossterm::style::Color {
 fn get_terminal_size() -> ClientResult<TerminalSize> {
     let (columns, rows) = crossterm::terminal::size()?;
     Ok(TerminalSize {
-        width: columns,
-        height: rows,
+        width: columns as TerminalScalar,
+        height: rows as TerminalScalar,
     })
 }
 
@@ -235,7 +239,8 @@ impl<W: Write + QueueableCommand> TerminalBackend for CrosstermBackend<W> {
 
         self.writer.queue(crossterm::cursor::Hide)?;
         for row in 0..size.height {
-            self.writer.queue(crossterm::cursor::MoveTo(0, row))?;
+            self.writer
+                .queue(crossterm::cursor::MoveTo(0, row as u16))?;
             for column in 0..size.width {
                 let buf_index = row as usize * size.width as usize + column as usize;
                 let cell = buffer[buf_index];

@@ -1,6 +1,11 @@
-use crate::client::terminal::{TerminalPos, TerminalRect, TerminalSize};
+use crate::client::{
+    last_of,
+    terminal::{TerminalPos, TerminalRect, TerminalScalar, TerminalSize},
+};
 
-use super::{apply_constraints, AxisConstraint, BoxConstraints, Frame, Widget};
+use super::{
+    apply_constraints, apply_max_constraint, AxisConstraint, BoxConstraints, Frame, Widget,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct WrappedListWidget<W> {
@@ -77,19 +82,22 @@ impl<W: Widget> Widget for WrappedListWidget<W> {
     }
 }
 
+/// Widget that keeps the tail end of its widget list in view.
 #[derive(Clone, Debug)]
 pub struct VerticalListWidget<W> {
     children: Vec<W>,
+    computed_base_height: TerminalScalar,
     computed_child_sizes: Vec<TerminalSize>,
-    computed_size: Option<TerminalSize>,
+    computed_clamped_size: TerminalSize,
 }
 
 impl<W> VerticalListWidget<W> {
     pub fn new(children: Vec<W>) -> Self {
         Self {
             children,
+            computed_base_height: 0,
             computed_child_sizes: Vec::default(),
-            computed_size: Option::default(),
+            computed_clamped_size: TerminalSize::default(),
         }
     }
 }
@@ -98,44 +106,36 @@ impl<W: Widget> Widget for VerticalListWidget<W> {
     fn layout(&mut self, constraints: BoxConstraints) -> TerminalSize {
         let mut total_height = 0;
         let mut max_width = 0;
-        for child in self.children.iter_mut().rev() {
-            // don't layout children we can't see!
-            if constraints.height.overflows(total_height) {
-                break;
-            }
 
+        for child in self.children.iter_mut().rev() {
             let child_size = child.layout(BoxConstraints {
                 height: AxisConstraint::unconstrained(),
                 ..constraints
             });
+
             total_height += child_size.height;
             max_width = max_width.max(child_size.width);
             self.computed_child_sizes.push(child_size);
+
+            if constraints.height.overflows(total_height) {
+                break;
+            }
         }
 
-        let bounds = apply_constraints(constraints, max_width, total_height);
-        self.computed_size = Some(bounds);
-        bounds
+        self.computed_base_height = -constraints.height.overflows_by(total_height);
+        apply_constraints(constraints, max_width, total_height)
     }
 
     fn render<'buf>(&self, mut frame: Frame<'buf>) {
-        let mut current_base = 0;
-        for (child, &child_size) in
-            Iterator::zip(self.children.iter().rev(), self.computed_child_sizes.iter()).rev()
-        {
-            let foo = TerminalRect {
-                start: TerminalPos {
-                    column: 0,
-                    row: current_base,
-                },
-                end: TerminalPos {
-                    column: self.computed_size.unwrap().width,
-                    row: current_base + child_size.height,
-                },
-            };
+        let mut current_height = self.computed_base_height;
+        let children = last_of(self.computed_child_sizes.len(), &self.children);
 
-            frame.render_widget(foo, child);
-            current_base += child_size.height;
+        for (child, &size) in children.iter().zip(self.computed_child_sizes.iter().rev()) {
+            frame.render_widget(
+                TerminalRect::from_size(size).offset_rows(current_height),
+                child,
+            );
+            current_height += size.height;
         }
     }
 }

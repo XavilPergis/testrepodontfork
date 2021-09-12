@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::client::{
-    terminal::{TerminalPos, TerminalSize},
+    terminal::{TerminalPos, TerminalScalar, TerminalSize},
     widget::apply_constraints,
 };
 
@@ -77,7 +77,7 @@ impl<'a> From<Vec<StyledSegment<'a>>> for StyledText<'a> {
 pub struct TextWidget<'a> {
     text: StyledText<'a>,
     computed_size: Option<TerminalSize>,
-    computed_line_lengths: Vec<u16>,
+    computed_line_lengths: Vec<TerminalScalar>,
 }
 
 impl<'a> TextWidget<'a> {
@@ -102,7 +102,7 @@ impl<'a> Widget for TextWidget<'a> {
         for span in self.text.spans.iter() {
             for _ch in span.text.chars() {
                 if max_width.map(|max| current_column >= max).unwrap_or(false) {
-                    self.computed_line_lengths.push(current_column - 1);
+                    self.computed_line_lengths.push(current_column);
                     current_column = 0;
                 }
 
@@ -118,7 +118,7 @@ impl<'a> Widget for TextWidget<'a> {
         let bounds = apply_constraints(
             constraints,
             width_bound,
-            self.computed_line_lengths.len() as u16,
+            self.computed_line_lengths.len() as TerminalScalar,
         );
 
         self.computed_size = Some(bounds);
@@ -126,6 +126,10 @@ impl<'a> Widget for TextWidget<'a> {
     }
 
     fn render<'buf>(&self, mut frame: Frame<'buf>) {
+        if self.computed_line_lengths.is_empty() {
+            return;
+        }
+
         let mut pos = TerminalPos::default();
         let mut line_index = 0;
         for span in self.text.spans.iter() {
@@ -137,12 +141,12 @@ impl<'a> Widget for TextWidget<'a> {
                         character: Some(ch),
                     },
                 );
+
+                pos.column += 1;
                 if pos.column == self.computed_line_lengths[line_index] {
                     pos.column = 0;
                     pos.row += 1;
                     line_index += 1;
-                } else {
-                    pos.column += 1;
                 }
             }
         }

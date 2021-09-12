@@ -11,7 +11,7 @@ use self::{
     widget::{
         style::{StyledSegment, StyledText},
         widgets::*,
-        Widget,
+        VerticalSplitView, Widget,
     },
 };
 
@@ -194,20 +194,31 @@ impl App {
     }
 
     fn build_widget_tree(&self) -> impl Widget + '_ {
-        let chat_lines = self
-            .chat_lines
-            .iter()
-            .map(|line| self.build_chat_line_widget(line))
-            .collect();
-        VerticalListWidget::new(chat_lines)
+        let chat_lines = VerticalListWidget::new(
+            self.chat_lines
+                .iter()
+                .map(|line| self.build_chat_line_widget(line))
+                .collect(),
+        );
+
+        let chat_bar = TextWidget::new(
+            StyledText::new()
+                .with_span(StyledSegment {
+                    text: "=> ".into(),
+                    style: TerminalCellStyle::default().with_fg_color(Color::Yellow),
+                })
+                .with_span(self.current_message_text.as_str()),
+        );
+
+        VerticalSplitView::new(chat_bar, chat_lines)
     }
 
     fn redraw_message_ui<B: TerminalBackend>(&self, terminal: &mut B) -> ClientResult<()> {
         let mut widget = self.build_widget_tree();
 
         widget.layout(BoxConstraints {
-            width: AxisConstraint::bounded_maximum(terminal.size()?.width),
-            height: AxisConstraint::bounded_maximum(terminal.size()?.height),
+            width: AxisConstraint::exactly(terminal.size()?.width),
+            height: AxisConstraint::exactly(terminal.size()?.height),
         });
 
         // eprintln!("{:?}", widget);

@@ -1,9 +1,11 @@
 use super::widget::Widget;
 
+pub type TerminalScalar = i32;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct TerminalPos {
-    pub column: u16,
-    pub row: u16,
+    pub column: TerminalScalar,
+    pub row: TerminalScalar,
 }
 
 macro_rules! gen_pos_add_impls {
@@ -34,8 +36,8 @@ gen_pos_add_impls! {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct TerminalSize {
-    pub width: u16,
-    pub height: u16,
+    pub width: TerminalScalar,
+    pub height: TerminalScalar,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
@@ -45,11 +47,51 @@ pub struct TerminalRect {
 }
 
 impl TerminalRect {
-    pub fn width(&self) -> u16 {
+    pub fn from_size(size: TerminalSize) -> Self {
+        Self {
+            start: TerminalPos::default(),
+            end: TerminalPos {
+                column: size.width,
+                row: size.height,
+            },
+        }
+    }
+
+    pub fn offset_rows(&self, rows: TerminalScalar) -> Self {
+        Self {
+            start: self.start
+                + TerminalSize {
+                    width: 0,
+                    height: rows,
+                },
+            end: self.end
+                + TerminalSize {
+                    width: 0,
+                    height: rows,
+                },
+        }
+    }
+
+    pub fn offset_columns(&self, columns: TerminalScalar) -> Self {
+        Self {
+            start: self.start
+                + TerminalSize {
+                    width: columns,
+                    height: 0,
+                },
+            end: self.end
+                + TerminalSize {
+                    width: columns,
+                    height: 0,
+                },
+        }
+    }
+
+    pub fn width(&self) -> TerminalScalar {
         self.end.column - self.start.column
     }
 
-    pub fn height(&self) -> u16 {
+    pub fn height(&self) -> TerminalScalar {
         self.end.row - self.start.row
     }
 }
@@ -156,6 +198,7 @@ pub struct TerminalCell {
     pub character: Option<char>,
 }
 
+#[derive(Debug)]
 pub struct Frame<'buf> {
     root_size: TerminalSize,
     root_buffer: &'buf mut [TerminalCell],
@@ -189,26 +232,48 @@ impl<'buf> Frame<'buf> {
         });
     }
 
-    fn buffer_index(&self, offset: TerminalPos) -> usize {
-        let root_offset = offset + self.frame_bounds.start;
-        debug_assert!(root_offset.row <= self.frame_bounds.end.row);
-        debug_assert!(root_offset.column <= self.frame_bounds.end.column);
-        root_offset.row as usize * self.root_size.width as usize + root_offset.column as usize
+    fn make_buffer_index(&self, row: usize, col: usize) -> usize {
+        row * (self.root_size.width as usize) + col
+    }
+
+    fn buffer_index(&self, offset: TerminalPos) -> Option<usize> {
+        let pos_root = self.frame_bounds.start + offset;
+
+        if offset.column < 0
+            || offset.column > self.width()
+            || offset.row < 0
+            || offset.row > self.height()
+        {
+            return None;
+        }
+
+        if pos_root.column < 0
+            || pos_root.column >= self.root_size.width
+            || pos_root.row < 0
+            || pos_root.row >= self.root_size.height
+        {
+            return None;
+        }
+
+        Some(self.make_buffer_index(pos_root.row as usize, pos_root.column as usize))
     }
 
     pub fn put(&mut self, offset: TerminalPos, cell: TerminalCell) {
-        self.root_buffer[self.buffer_index(offset)] = cell;
+        if let Some(index) = self.buffer_index(offset) {
+            self.root_buffer[index] = cell;
+        }
     }
 
-    pub fn get(&self, offset: TerminalPos) -> &TerminalCell {
-        &self.root_buffer[self.buffer_index(offset)]
+    pub fn get(&self, offset: TerminalPos) -> Option<&TerminalCell> {
+        self.buffer_index(offset)
+            .map(|index| &self.root_buffer[index])
     }
 
-    pub fn width(&self) -> u16 {
+    pub fn width(&self) -> TerminalScalar {
         self.frame_bounds.width()
     }
 
-    pub fn height(&self) -> u16 {
+    pub fn height(&self) -> TerminalScalar {
         self.frame_bounds.height()
     }
 }
