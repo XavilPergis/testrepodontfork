@@ -1,3 +1,5 @@
+use super::widget::Widget;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct TerminalPos {
     pub column: u16,
@@ -145,5 +147,85 @@ pub enum Color {
 impl Default for Color {
     fn default() -> Self {
         Color::Reset
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
+pub struct TerminalCell {
+    pub style: TerminalCellStyle,
+    pub character: Option<char>,
+}
+
+pub struct Frame<'buf> {
+    root_size: TerminalSize,
+    root_buffer: &'buf mut [TerminalCell],
+
+    frame_bounds: TerminalRect,
+}
+
+impl<'buf> Frame<'buf> {
+    pub fn root(size: TerminalSize, buffer: &'buf mut [TerminalCell]) -> Self {
+        Self {
+            root_size: size,
+            root_buffer: buffer,
+            frame_bounds: TerminalRect {
+                end: TerminalPos {
+                    column: size.width,
+                    row: size.height,
+                },
+                ..TerminalRect::default()
+            },
+        }
+    }
+
+    pub fn render_widget<W: Widget>(&mut self, area: TerminalRect, widget: &W) {
+        widget.render(Frame {
+            root_size: self.root_size,
+            root_buffer: self.root_buffer,
+            frame_bounds: TerminalRect {
+                start: self.frame_bounds.start + area.start,
+                end: self.frame_bounds.end + area.end,
+            },
+        });
+    }
+
+    fn buffer_index(&self, offset: TerminalPos) -> usize {
+        let root_offset = offset + self.frame_bounds.start;
+        debug_assert!(root_offset.row <= self.frame_bounds.end.row);
+        debug_assert!(root_offset.column <= self.frame_bounds.end.column);
+        root_offset.row as usize * self.root_size.width as usize + root_offset.column as usize
+    }
+
+    pub fn put(&mut self, offset: TerminalPos, cell: TerminalCell) {
+        self.root_buffer[self.buffer_index(offset)] = cell;
+    }
+
+    pub fn get(&self, offset: TerminalPos) -> &TerminalCell {
+        &self.root_buffer[self.buffer_index(offset)]
+    }
+
+    pub fn width(&self) -> u16 {
+        self.frame_bounds.width()
+    }
+
+    pub fn height(&self) -> u16 {
+        self.frame_bounds.height()
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
+pub struct TerminalCellStyle {
+    pub foreground_color: Color,
+    pub background_color: Color,
+}
+
+impl TerminalCellStyle {
+    pub fn with_fg_color(mut self, color: Color) -> Self {
+        self.foreground_color = color;
+        self
+    }
+    pub fn with_bg_color(mut self, color: Color) -> Self {
+        self.foreground_color = color;
+        self
     }
 }

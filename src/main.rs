@@ -1,8 +1,5 @@
+use chatserver::{client, server};
 use structopt::StructOpt;
-
-pub mod client;
-pub mod common;
-pub mod server;
 
 #[derive(Debug, StructOpt)]
 pub enum RunArguments {
