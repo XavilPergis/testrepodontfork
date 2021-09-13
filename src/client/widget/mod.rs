@@ -6,6 +6,7 @@ mod text;
 pub mod widgets {
     pub use super::list::{VerticalListWidget, WrappedListWidget};
     pub use super::text::TextWidget;
+    pub use super::VerticalSplitView;
 }
 
 pub mod style {

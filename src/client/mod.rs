@@ -134,7 +134,7 @@ impl App {
             .add_span(">");
     }
 
-    fn build_chat_line_widget<'a>(&'a self, line: &'a ChatLine) -> impl Widget + 'a {
+    fn build_chat_line_widget<'a>(&'a self, line: &'a ChatLine) -> Box<dyn Widget + 'a> {
         let mut text = StyledText::new();
         match line {
             ChatLine::Text { peer_id, message } => {
@@ -190,10 +190,10 @@ impl App {
             }
         }
 
-        TextWidget::new(text)
+        Box::new(TextWidget::new(text))
     }
 
-    fn build_widget_tree(&self) -> impl Widget + '_ {
+    fn build_chat_widget(&self) -> Box<dyn Widget + '_> {
         let chat_lines = VerticalListWidget::new(
             self.chat_lines
                 .iter()
@@ -210,7 +210,11 @@ impl App {
                 .with_span(self.current_message_text.as_str()),
         );
 
-        VerticalSplitView::new(chat_bar, chat_lines)
+        Box::new(VerticalSplitView::new(chat_bar, chat_lines))
+    }
+
+    fn build_widget_tree(&self) -> Box<dyn Widget + '_> {
+        self.build_chat_widget()
     }
 
     fn redraw_message_ui<B: TerminalBackend>(&self, terminal: &mut B) -> ClientResult<()> {

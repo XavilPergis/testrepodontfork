@@ -3,9 +3,7 @@ use crate::client::{
     terminal::{TerminalPos, TerminalRect, TerminalScalar, TerminalSize},
 };
 
-use super::{
-    apply_constraints, apply_max_constraint, AxisConstraint, BoxConstraints, Frame, Widget,
-};
+use super::{apply_constraints, AxisConstraint, BoxConstraints, Frame, Widget};
 
 #[derive(Clone, Debug, Default)]
 pub struct WrappedListWidget<W> {
@@ -33,12 +31,16 @@ impl<W: Widget> Widget for WrappedListWidget<W> {
         let mut max_height = 0;
 
         for child in self.children.iter_mut() {
-            let child_size = child.layout(constraints);
+            let child_size = child.layout(BoxConstraints {
+                height: AxisConstraint::unconstrained(),
+                width: constraints.width.unbind_minimum(),
+            });
             self.computed_child_sizes.push(child_size);
 
-            if constraints
-                .width
-                .overflows(child_size.width + current_pos.column)
+            if current_pos.column > 0
+                && constraints
+                    .width
+                    .overflows(child_size.width + current_pos.column)
             {
                 current_pos.column = 0;
                 current_pos.row += max_row_height;
@@ -61,18 +63,17 @@ impl<W: Widget> Widget for WrappedListWidget<W> {
         let mut current_pos = TerminalPos::default();
         let mut max_row_height = 0;
 
-        for (child, size) in self.children.iter().zip(self.computed_child_sizes.iter()) {
-            if current_pos.column + size.width > self.computed_size.unwrap().width {
+        for (child, &size) in self.children.iter().zip(self.computed_child_sizes.iter()) {
+            if current_pos.column > 0
+                && current_pos.column + size.width > self.computed_size.unwrap().width
+            {
                 current_pos.column = 0;
                 current_pos.row += max_row_height;
                 max_row_height = 0;
             }
 
             frame.render_widget(
-                TerminalRect {
-                    start: current_pos,
-                    end: current_pos + size,
-                },
+                TerminalRect::from_size(size).offset(current_pos.into()),
                 child,
             );
 
@@ -88,7 +89,6 @@ pub struct VerticalListWidget<W> {
     children: Vec<W>,
     computed_base_height: TerminalScalar,
     computed_child_sizes: Vec<TerminalSize>,
-    computed_clamped_size: TerminalSize,
 }
 
 impl<W> VerticalListWidget<W> {
@@ -97,7 +97,6 @@ impl<W> VerticalListWidget<W> {
             children,
             computed_base_height: 0,
             computed_child_sizes: Vec::default(),
-            computed_clamped_size: TerminalSize::default(),
         }
     }
 }

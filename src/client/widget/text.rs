@@ -67,6 +67,12 @@ impl<'a> From<String> for StyledText<'a> {
     }
 }
 
+impl<'a> From<StyledSegment<'a>> for StyledText<'a> {
+    fn from(span: StyledSegment<'a>) -> Self {
+        StyledText { spans: vec![span] }
+    }
+}
+
 impl<'a> From<Vec<StyledSegment<'a>>> for StyledText<'a> {
     fn from(spans: Vec<StyledSegment<'a>>) -> Self {
         StyledText { spans }

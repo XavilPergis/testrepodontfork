@@ -40,6 +40,15 @@ pub struct TerminalSize {
     pub height: TerminalScalar,
 }
 
+impl From<TerminalPos> for TerminalSize {
+    fn from(pos: TerminalPos) -> Self {
+        TerminalSize {
+            width: pos.column,
+            height: pos.row,
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Default)]
 pub struct TerminalRect {
     pub start: TerminalPos,
@@ -58,32 +67,23 @@ impl TerminalRect {
     }
 
     pub fn offset_rows(&self, rows: TerminalScalar) -> Self {
-        Self {
-            start: self.start
-                + TerminalSize {
-                    width: 0,
-                    height: rows,
-                },
-            end: self.end
-                + TerminalSize {
-                    width: 0,
-                    height: rows,
-                },
-        }
+        self.offset(TerminalSize {
+            width: 0,
+            height: rows,
+        })
     }
 
     pub fn offset_columns(&self, columns: TerminalScalar) -> Self {
+        self.offset(TerminalSize {
+            width: columns,
+            height: 0,
+        })
+    }
+
+    pub fn offset(&self, offset: TerminalSize) -> TerminalRect {
         Self {
-            start: self.start
-                + TerminalSize {
-                    width: columns,
-                    height: 0,
-                },
-            end: self.end
-                + TerminalSize {
-                    width: columns,
-                    height: 0,
-                },
+            start: self.start + offset,
+            end: self.end + offset,
         }
     }
 
@@ -290,7 +290,7 @@ impl TerminalCellStyle {
         self
     }
     pub fn with_bg_color(mut self, color: Color) -> Self {
-        self.foreground_color = color;
+        self.background_color = color;
         self
     }
 }
