@@ -1,10 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    sync::Weak,
+};
 use tokio::{
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener, TcpStream,
     },
-    sync::mpsc,
+    sync::mpsc::{self, UnboundedSender},
 };
 
 use crate::common::{packet::*, CommonError};
@@ -148,6 +152,15 @@ impl ClientSerializerContext {
         }
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct ClientInfo {}
+
+#[derive(Debug)]
+struct ServerConnectionHandler {
+    next_client_id: u64,
+    clients: HashMap<u64, ClientInfo>,
 }
 
 #[derive(Debug)]
@@ -410,3 +423,7 @@ pub async fn run_server() -> ServerResult<()> {
 
     Ok(())
 }
+
+pub mod client;
+pub mod instance;
+pub mod room;
