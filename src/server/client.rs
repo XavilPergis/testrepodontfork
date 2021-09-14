@@ -1,12 +1,326 @@
-use tokio::sync::mpsc::UnboundedSender;
+use std::{collections::HashMap, sync::Arc};
 
-pub enum ClientMessage {}
+use tokio::{
+    net::{
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+        TcpStream,
+    },
+    sync::{
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        oneshot,
+    },
+};
 
-#[derive(Clone, Debug)]
-pub struct ClientRef {
-    pub channel: UnboundedSender<ClientMessage>,
+use crate::common::packet::{
+    read_whole_packet, write_whole_packet, ClientId, ClientToServerPacket,
+    ClientToServerPacketKind, ServerToClientPacket, ServerToClientResponsePacket,
+};
+
+use super::{
+    instance::{InstanceMessage, InstanceRef},
+    room::RoomRef,
+    ServerResult,
+};
+
+#[derive(Debug)]
+pub enum ClientMessage {
+    ReceivePacket(ClientToServerPacket),
+    // SendPacket(ServerToClientPacket),
+    Disconnect,
+
+    ClientMessage {
+        client: ClientRef,
+        message: Arc<String>,
+    },
+    ClientConnected {
+        client: ClientRef,
+    },
+    ClientDisconnected {
+        client: ClientRef,
+    },
 }
 
-pub struct Client {
-    pub instance: super::instance::InstanceRef,
+#[derive(Clone, Debug)]
+struct ClientRefInner {
+    channel: UnboundedSender<ClientMessage>,
+    id: ClientId,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClientRef(Arc<ClientRefInner>);
+
+impl ClientRef {
+    pub fn new(id: ClientId, channel: UnboundedSender<ClientMessage>) -> Self {
+        Self(Arc::new(ClientRefInner { channel, id }))
+    }
+
+    pub fn send<M: Into<ClientMessage>>(&self, message: M) {
+        self.0.channel.send(message.into()).unwrap()
+    }
+
+    pub fn id(&self) -> ClientId {
+        self.0.id
+    }
+}
+
+struct Client {
+    reference: ClientRef,
+    instance: InstanceRef,
+
+    rooms: Vec<RoomRef>,
+}
+
+impl Client {
+    pub fn new(reference: ClientRef, instance: InstanceRef) -> Self {
+        Self {
+            reference,
+            instance,
+            rooms: Vec::default(),
+        }
+    }
+}
+
+async fn get_response<T, F, R>(func: F) -> T
+where
+    F: FnOnce(Responder<T>) -> R,
+{
+    let (tx, rx) = oneshot::channel();
+    func(Responder { sender: Some(tx) });
+    rx.await.unwrap()
+}
+
+#[derive(Debug)]
+pub struct Responder<T> {
+    sender: Option<oneshot::Sender<T>>,
+}
+
+impl<T> Responder<T> {
+    pub fn send(self, value: T) {
+        if let Some(sender) = self.sender {
+            let _ = sender.send(value);
+        }
+    }
+}
+
+impl Responder<()> {
+    pub fn signal(self) {
+        if let Some(sender) = self.sender {
+            let _ = sender.send(());
+        }
+    }
+}
+
+async fn handle_receive_packet(
+    ctx: &mut Client,
+    packet_sender: UnboundedSender<ServerToClientPacket>,
+    packet: ClientToServerPacket,
+) {
+    let rid = packet.rid;
+    match packet.kind {
+        ClientToServerPacketKind::Connect { username } => {
+            ctx.instance.send(InstanceMessage::UpdateClientUsername {
+                client: ctx.reference.id(),
+                username: Arc::new(username),
+            });
+            get_response(|responder| {
+                ctx.instance.send(InstanceMessage::BroadcastConnection {
+                    client: ctx.reference.clone(),
+                    responder,
+                })
+            })
+            .await;
+
+            packet_sender
+                .send(ServerToClientPacket::Response {
+                    rid,
+                    packet: ServerToClientResponsePacket::ConnectAck {
+                        client_id: ctx.reference.id(),
+                    },
+                })
+                .unwrap();
+        }
+
+        ClientToServerPacketKind::Message { message } => {
+            get_response(|responder| {
+                ctx.instance.send(InstanceMessage::BroadcastMessage {
+                    sender: ctx.reference.clone(),
+                    message: Arc::new(message),
+                    responder,
+                })
+            })
+            .await;
+
+            packet_sender
+                .send(ServerToClientPacket::Response {
+                    rid,
+                    packet: ServerToClientResponsePacket::MessageAck {},
+                })
+                .unwrap();
+        }
+
+        ClientToServerPacketKind::Shutdown {} => todo!(),
+        ClientToServerPacketKind::RequestPeerListing {} => {
+            let peers = get_response(|responder| {
+                ctx.instance.send(InstanceMessage::QueryPeers {
+                    client: ctx.reference.clone(),
+                    responder,
+                })
+            })
+            .await;
+
+            packet_sender
+                .send(ServerToClientPacket::Response {
+                    rid,
+                    packet: ServerToClientResponsePacket::PeerListingResponse {
+                        peers: peers.iter().map(|peer| peer.id()).collect(),
+                    },
+                })
+                .unwrap();
+        }
+        ClientToServerPacketKind::RequestPeerInfo { peer_ids } => {
+            let mut peer_infos = HashMap::new();
+
+            for peer_id in peer_ids {
+                let info = get_response(|responder| {
+                    ctx.instance.send(InstanceMessage::QueryPeerInfo {
+                        client: ctx.reference.clone(),
+                        peer: peer_id,
+                        responder,
+                    })
+                })
+                .await;
+                peer_infos.insert(peer_id, info);
+            }
+
+            packet_sender
+                .send(ServerToClientPacket::Response {
+                    rid,
+                    packet: ServerToClientResponsePacket::PeerInfoResponse { peers: peer_infos },
+                })
+                .unwrap();
+        }
+    }
+}
+
+fn handle_client_message(
+    ctx: &mut Client,
+    packet_sender: UnboundedSender<ServerToClientPacket>,
+    client: ClientRef,
+    message: Arc<String>,
+) {
+    packet_sender
+        .send(ServerToClientPacket::PeerMessage {
+            peer_id: client.id(),
+            message: (*message).clone(),
+        })
+        .unwrap();
+}
+
+fn handle_client_connect(
+    ctx: &mut Client,
+    packet_sender: UnboundedSender<ServerToClientPacket>,
+    client: ClientRef,
+) {
+    packet_sender
+        .send(ServerToClientPacket::PeerConnected {
+            peer_id: client.id(),
+        })
+        .unwrap();
+}
+
+fn handle_client_disconnect(
+    ctx: &mut Client,
+    packet_sender: UnboundedSender<ServerToClientPacket>,
+    client: ClientRef,
+) {
+    packet_sender
+        .send(ServerToClientPacket::PeerDisconnected {
+            peer_id: client.id(),
+        })
+        .unwrap();
+}
+
+pub async fn run_client(
+    reference: ClientRef,
+    id: ClientId,
+    instance: InstanceRef,
+    mut messages: UnboundedReceiver<ClientMessage>,
+    packet_sender: UnboundedSender<ServerToClientPacket>,
+) -> ServerResult<()> {
+    let mut ctx = Client::new(reference, instance.clone());
+    while let Some(message) = messages.recv().await {
+        match message {
+            ClientMessage::ReceivePacket(packet) => {
+                handle_receive_packet(&mut ctx, packet_sender.clone(), packet).await;
+            }
+            ClientMessage::Disconnect => break,
+
+            ClientMessage::ClientMessage { client, message } => {
+                handle_client_message(&mut ctx, packet_sender.clone(), client, message);
+            }
+            ClientMessage::ClientConnected { client } => {
+                handle_client_connect(&mut ctx, packet_sender.clone(), client);
+            }
+            ClientMessage::ClientDisconnected { client } => {
+                handle_client_disconnect(&mut ctx, packet_sender.clone(), client);
+            }
+        }
+    }
+
+    instance.send(InstanceMessage::DisconnectClient { client: id });
+    Ok(())
+}
+
+pub fn create_client(client_id: ClientId, stream: TcpStream, instance: InstanceRef) -> ClientRef {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let client = ClientRef::new(client_id, tx.clone());
+
+    let (ser_tx, ser_rx) = mpsc::unbounded_channel();
+    let (read_stream, write_stream) = stream.into_split();
+
+    tokio::spawn(run_serializer(client_id, write_stream, ser_rx));
+    tokio::spawn(run_deserializer(client_id, read_stream, tx));
+    tokio::spawn(run_client(client.clone(), client_id, instance, rx, ser_tx));
+
+    client
+}
+
+async fn run_deserializer(
+    client_id: ClientId,
+    mut read_stream: OwnedReadHalf,
+    packet_channel: UnboundedSender<ClientMessage>,
+) {
+    let mut read_buffer = Vec::with_capacity(2048);
+    let mut running = true;
+    while running {
+        let packet_res = read_whole_packet(&mut read_stream, &mut read_buffer).await;
+        match packet_res {
+            Ok(Some(packet)) => {
+                log::trace!("{} deserialized {:?}", client_id, packet);
+                running &= !packet_channel
+                    .send(ClientMessage::ReceivePacket(packet))
+                    .is_err()
+            }
+            Ok(None) => running = false,
+            Err(err) => todo!("deserializer error: {:?}", err),
+        }
+    }
+
+    packet_channel.send(ClientMessage::Disconnect).unwrap();
+    log::debug!("deserializer for {} shut down", client_id);
+}
+
+async fn run_serializer(
+    client_id: ClientId,
+    mut write_stream: OwnedWriteHalf,
+    mut packet_channel: UnboundedReceiver<ServerToClientPacket>,
+) {
+    let mut write_buffer = Vec::with_capacity(2048);
+    while let Some(message) = packet_channel.recv().await {
+        if let Err(err) = write_whole_packet(&mut write_stream, &mut write_buffer, &message).await {
+            todo!("serializer error: {:?}", err);
+        }
+        log::trace!("{} serialized {:?}", client_id, message);
+    }
+    log::debug!("serializer for {} shut down", client_id);
 }

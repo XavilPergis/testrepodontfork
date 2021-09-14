@@ -18,6 +18,31 @@ pub trait PacketCodec: Sized {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ClientId(pub u64);
+
+impl std::fmt::Display for ClientId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#client:{}", self.0)?;
+        Ok(())
+    }
+}
+
+impl PacketCodec for ClientId {
+    fn serialize<'buf>(
+        &self,
+        ctx: &mut PacketSerializerContext<'buf>,
+    ) -> PacketSerializeResult<()> {
+        ctx.serialize(&self.0)
+    }
+
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<Self> {
+        ctx.deserialize().map(ClientId)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ResponseId(pub u32);
 
 impl PacketCodec for ResponseId {
@@ -61,11 +86,11 @@ impl PacketCodec for PeerInfo {
 // server -> client
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServerToClientResponsePacket {
-    ConnectAck { connection_id: u64 },
+    ConnectAck { client_id: ClientId },
     MessageAck {},
     ShutdownAck {},
-    PeerListingResponse { peers: Vec<u64> },
-    PeerInfoResponse { peers: HashMap<u64, PeerInfo> },
+    PeerListingResponse { peers: Vec<ClientId> },
+    PeerInfoResponse { peers: HashMap<ClientId, PeerInfo> },
 }
 
 impl PacketCodec for ServerToClientResponsePacket {
@@ -74,9 +99,9 @@ impl PacketCodec for ServerToClientResponsePacket {
         ctx: &mut PacketSerializerContext<'buf>,
     ) -> PacketSerializeResult<()> {
         match self {
-            ServerToClientResponsePacket::ConnectAck { connection_id } => {
+            ServerToClientResponsePacket::ConnectAck { client_id } => {
                 ctx.serialize(&S2C_RESPONSE_ID_CONNECT_ACK)?;
-                ctx.serialize(connection_id)?;
+                ctx.serialize(client_id)?;
             }
             ServerToClientResponsePacket::MessageAck {} => {
                 ctx.serialize(&S2C_RESPONSE_ID_MESSAGE_ACK)?;
@@ -101,7 +126,7 @@ impl PacketCodec for ServerToClientResponsePacket {
     ) -> PacketDeserializeResult<Self> {
         Ok(match ctx.deserialize::<u32>()? {
             S2C_RESPONSE_ID_CONNECT_ACK => ServerToClientResponsePacket::ConnectAck {
-                connection_id: ctx.deserialize()?,
+                client_id: ctx.deserialize()?,
             },
             S2C_RESPONSE_ID_MESSAGE_ACK => ServerToClientResponsePacket::MessageAck {},
             S2C_RESPONSE_ID_SHUTDOWN_ACK => ServerToClientResponsePacket::ShutdownAck {},
@@ -125,13 +150,13 @@ pub enum ServerToClientPacket {
         packet: ServerToClientResponsePacket,
     },
     PeerConnected {
-        peer_id: u64,
+        peer_id: ClientId,
     },
-    PeerDisonnected {
-        peer_id: u64,
+    PeerDisconnected {
+        peer_id: ClientId,
     },
     PeerMessage {
-        peer_id: u64,
+        peer_id: ClientId,
         message: String,
     },
 }
@@ -162,7 +187,7 @@ impl PacketCodec for ServerToClientPacket {
                 ctx.serialize(&S2C_ID_PEER_CONNECTED)?;
                 ctx.serialize(peer_id)?;
             }
-            ServerToClientPacket::PeerDisonnected { peer_id } => {
+            ServerToClientPacket::PeerDisconnected { peer_id } => {
                 ctx.serialize(&S2C_ID_PEER_DISCONNECTED)?;
                 ctx.serialize(peer_id)?;
             }
@@ -186,7 +211,7 @@ impl PacketCodec for ServerToClientPacket {
             S2C_ID_PEER_CONNECTED => ServerToClientPacket::PeerConnected {
                 peer_id: ctx.deserialize()?,
             },
-            S2C_ID_PEER_DISCONNECTED => ServerToClientPacket::PeerDisonnected {
+            S2C_ID_PEER_DISCONNECTED => ServerToClientPacket::PeerDisconnected {
                 peer_id: ctx.deserialize()?,
             },
             S2C_ID_PEER_MESSAGE => ServerToClientPacket::PeerMessage {
@@ -205,7 +230,7 @@ pub enum ClientToServerPacketKind {
     Message { message: String },
     Shutdown {},
     RequestPeerListing {},
-    RequestPeerInfo { peer_ids: Vec<u64> },
+    RequestPeerInfo { peer_ids: Vec<ClientId> },
 }
 
 pub const C2S_ID_CONNECT: u32 = 0;
@@ -236,7 +261,7 @@ impl PacketCodec for ClientToServerPacketKind {
             }
             ClientToServerPacketKind::RequestPeerInfo { peer_ids } => {
                 ctx.serialize::<u32>(&C2S_ID_REQUEST_PEER_INFO)?;
-                ctx.serialize::<Vec<u64>>(peer_ids)?;
+                ctx.serialize::<Vec<ClientId>>(peer_ids)?;
             }
         }
         Ok(())

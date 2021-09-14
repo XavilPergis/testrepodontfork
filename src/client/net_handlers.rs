@@ -2,23 +2,20 @@ use tokio::sync::mpsc;
 
 use crate::{
     client::{connection_handler::ConnectionHandlerCommand, ChatLine},
-    common::packet::{ClientToServerPacketKind, ServerToClientResponsePacket},
+    common::packet::{ClientId, ClientToServerPacketKind, ServerToClientResponsePacket},
 };
 
 use super::{connection_handler::ClientTask, AppCommand, ClientResult};
 
-async fn query_peers(task: &mut ClientTask, peers: Vec<u64>) -> ClientResult<()> {
+async fn query_peers(task: &mut ClientTask, peers: Vec<ClientId>) -> ClientResult<()> {
     task.send_packet(ClientToServerPacketKind::RequestPeerInfo { peer_ids: peers })
         .await?;
 
     match task.recv().await.unwrap() {
         ServerToClientResponsePacket::PeerInfoResponse { peers } => {
-            for (connection_id, info) in peers {
-                task.send(ConnectionHandlerCommand::AddConnectionInfo {
-                    connection_id,
-                    info,
-                })
-                .await?;
+            for (client_id, info) in peers {
+                task.send(ConnectionHandlerCommand::AddConnectionInfo { client_id, info })
+                    .await?;
             }
         }
         _ => todo!(),
@@ -35,12 +32,12 @@ pub async fn negotiate_connection(
     task.send_packet(ClientToServerPacketKind::Connect { username })
         .await?;
 
-    let connection_id = match task.recv().await.unwrap() {
-        ServerToClientResponsePacket::ConnectAck { connection_id } => {
-            task.send(ConnectionHandlerCommand::SetConnectionId(connection_id))
+    let client_id = match task.recv().await.unwrap() {
+        ServerToClientResponsePacket::ConnectAck { client_id } => {
+            task.send(ConnectionHandlerCommand::SetConnectionId(client_id))
                 .await?;
-            query_peers(&mut task, vec![connection_id]).await?;
-            connection_id
+            query_peers(&mut task, vec![client_id]).await?;
+            client_id
         }
         _ => todo!(),
     };
@@ -61,7 +58,7 @@ pub async fn negotiate_connection(
     };
 
     cmd.send(AppCommand::AddChatLine(ChatLine::ConnectInfo {
-        connection_id,
+        id: client_id,
         peer_ids: peers,
     }))
     .unwrap();
@@ -72,7 +69,7 @@ pub async fn negotiate_connection(
 pub async fn send_peer_message(
     mut task: ClientTask,
     cmd: mpsc::UnboundedSender<AppCommand>,
-    self_id: u64,
+    self_id: ClientId,
     message: String,
 ) -> ClientResult<()> {
     task.send_packet(ClientToServerPacketKind::Message {
@@ -83,7 +80,7 @@ pub async fn send_peer_message(
     match task.recv().await.unwrap() {
         ServerToClientResponsePacket::MessageAck {} => {
             cmd.send(AppCommand::AddChatLine(ChatLine::Text {
-                peer_id: self_id,
+                id: self_id,
                 message,
             }))
             .unwrap();
@@ -97,9 +94,9 @@ pub async fn send_peer_message(
 pub async fn handle_peer_connect(
     mut task: ClientTask,
     cmd: mpsc::UnboundedSender<AppCommand>,
-    peer_id: u64,
+    peer_id: ClientId,
 ) -> ClientResult<()> {
-    cmd.send(AppCommand::AddChatLine(ChatLine::Connected { peer_id }))
+    cmd.send(AppCommand::AddChatLine(ChatLine::Connected { id: peer_id }))
         .unwrap();
     query_peers(&mut task, vec![peer_id]).await?;
 

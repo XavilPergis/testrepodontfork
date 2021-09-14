@@ -45,18 +45,18 @@ pub type ClientResult<T> = Result<T, ClientError>;
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ChatLine {
     Text {
-        peer_id: u64,
+        id: ClientId,
         message: String,
     },
     ConnectInfo {
-        connection_id: u64,
-        peer_ids: Vec<u64>,
+        id: ClientId,
+        peer_ids: Vec<ClientId>,
     },
     Connected {
-        peer_id: u64,
+        id: ClientId,
     },
     Disconnected {
-        peer_id: u64,
+        id: ClientId,
     },
 }
 
@@ -106,18 +106,18 @@ impl App {
         }
     }
 
-    fn get_display_tag(&self, connection_id: u64) -> Cow<str> {
-        match self.client.connection_info(connection_id) {
+    fn get_display_tag(&self, client_id: ClientId) -> Cow<str> {
+        match self.client.connection_info(client_id) {
             Some(info) => match &info.username {
                 Some(username) => username.as_str().into(),
-                None => Cow::Owned(format!("?{}", connection_id)),
+                None => Cow::Owned(format!("?{}", client_id)),
             },
-            None => Cow::Owned(format!("!{}", connection_id)),
+            None => Cow::Owned(format!("!{}", client_id)),
         }
     }
 
-    fn add_connection_spans<'a>(&'a self, connection_id: u64, text: &mut StyledText<'a>) {
-        let (marker, color) = match connection_id == self.client.connection_id().unwrap() {
+    fn add_connection_spans<'a>(&'a self, client_id: ClientId, text: &mut StyledText<'a>) {
+        let (marker, color) = match client_id == self.client.client_id().unwrap() {
             true => ("~", Color::Cyan),
             false => ("", Color::Green),
         };
@@ -128,7 +128,7 @@ impl App {
                 style: TerminalCellStyle::default().with_fg_color(color),
             })
             .add_span(StyledSegment {
-                text: self.get_display_tag(connection_id),
+                text: self.get_display_tag(client_id),
                 style: TerminalCellStyle::default().with_fg_color(color),
             })
             .add_span(">");
@@ -137,14 +137,17 @@ impl App {
     fn build_chat_line_widget<'a>(&'a self, line: &'a ChatLine) -> Box<dyn Widget + 'a> {
         let mut text = StyledText::new();
         match line {
-            ChatLine::Text { peer_id, message } => {
+            ChatLine::Text {
+                id: peer_id,
+                message,
+            } => {
                 self.add_connection_spans(*peer_id, &mut text);
                 text.add_span(": ");
                 text.add_span(message.as_str());
             }
 
             ChatLine::ConnectInfo {
-                connection_id,
+                id: client_id,
                 peer_ids,
             } => {
                 text.add_span(StyledSegment {
@@ -153,7 +156,7 @@ impl App {
                 });
 
                 text.add_span(" connected as ");
-                self.add_connection_spans(*connection_id, &mut text);
+                self.add_connection_spans(*client_id, &mut text);
 
                 if peer_ids.len() > 0 {
                     text.add_span(" to ");
@@ -171,7 +174,7 @@ impl App {
                 });
             }
 
-            ChatLine::Connected { peer_id } => {
+            ChatLine::Connected { id: peer_id } => {
                 text.add_span(StyledSegment {
                     text: ">> ".into(),
                     style: TerminalCellStyle::default().with_fg_color(Color::Blue),
@@ -180,7 +183,7 @@ impl App {
                 text.add_span(" connected");
             }
 
-            ChatLine::Disconnected { peer_id } => {
+            ChatLine::Disconnected { id: peer_id } => {
                 text.add_span(StyledSegment {
                     text: "<< ".into(),
                     style: TerminalCellStyle::default().with_fg_color(Color::Red),
@@ -258,11 +261,13 @@ impl App {
                 kind: KeyEventKind::Enter,
                 ..
             }) => {
-                let line = std::mem::replace(&mut self.current_message_text, String::new());
-                let self_id = self.client.connection_id().unwrap();
-                let cmd = self.command_tx.clone();
-                self.client
-                    .spawn_task(|task| net_handlers::send_peer_message(task, cmd, self_id, line));
+                if let Some(self_id) = self.client.client_id() {
+                    let line = std::mem::replace(&mut self.current_message_text, String::new());
+                    let cmd = self.command_tx.clone();
+                    self.client.spawn_task(|task| {
+                        net_handlers::send_peer_message(task, cmd, self_id, line)
+                    });
+                }
             }
 
             TerminalEvent::Key(TerminalKeyEvent {
@@ -287,11 +292,14 @@ impl App {
                 self.client
                     .spawn_task(|task| net_handlers::handle_peer_connect(task, cmd, peer_id));
             }
-            ServerToClientPacket::PeerDisonnected { peer_id } => {
-                self.chat_lines.push(ChatLine::Disconnected { peer_id });
+            ServerToClientPacket::PeerDisconnected { peer_id } => {
+                self.chat_lines.push(ChatLine::Disconnected { id: peer_id });
             }
             ServerToClientPacket::PeerMessage { peer_id, message } => {
-                self.chat_lines.push(ChatLine::Text { peer_id, message });
+                self.chat_lines.push(ChatLine::Text {
+                    id: peer_id,
+                    message,
+                });
             }
             _ => todo!(),
         }

@@ -11,8 +11,9 @@ use tokio::{
 
 use crate::common::{
     packet::{
-        read_whole_packet, write_whole_packet, ClientToServerPacket, ClientToServerPacketKind,
-        PeerInfo, ResponseId, ServerToClientPacket, ServerToClientResponsePacket,
+        read_whole_packet, write_whole_packet, ClientId, ClientToServerPacket,
+        ClientToServerPacketKind, PeerInfo, ResponseId, ServerToClientPacket,
+        ServerToClientResponsePacket,
     },
     CommonResult,
 };
@@ -28,10 +29,10 @@ enum ConnectionHandlerEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ConnectionHandlerCommand {
-    SetConnectionId(u64),
+    SetConnectionId(ClientId),
     SendPacket(ClientToServerPacket),
-    AddPeer(u64),
-    AddConnectionInfo { connection_id: u64, info: PeerInfo },
+    AddPeer(ClientId),
+    AddConnectionInfo { client_id: ClientId, info: PeerInfo },
 }
 
 #[derive(Debug)]
@@ -39,9 +40,9 @@ pub struct ConnectionHandler {
     stream: OwnedWriteHalf,
     write_buf: Vec<u8>,
 
-    connection_id: Option<u64>,
-    peer_ids: Vec<u64>,
-    connection_infos: HashMap<u64, PeerInfo>,
+    client_id: Option<ClientId>,
+    peer_ids: Vec<ClientId>,
+    connection_infos: HashMap<ClientId, PeerInfo>,
 
     inbound: mpsc::UnboundedReceiver<ConnectionHandlerEvent>,
     loopback: mpsc::UnboundedSender<ConnectionHandlerEvent>,
@@ -66,7 +67,7 @@ impl ConnectionHandler {
             stream: tcp_writer,
             write_buf: vec![],
             peer_ids: vec![],
-            connection_id: None,
+            client_id: None,
             connection_infos: HashMap::default(),
             inbound,
             loopback,
@@ -107,13 +108,12 @@ impl ConnectionHandler {
 
     async fn handle_command(&mut self, cmd: ConnectionHandlerCommand) -> ClientResult<()> {
         match cmd {
-            ConnectionHandlerCommand::SetConnectionId(id) => self.connection_id = Some(id),
+            ConnectionHandlerCommand::SetConnectionId(id) => self.client_id = Some(id),
             ConnectionHandlerCommand::SendPacket(packet) => self.write_packet(&packet).await?,
             ConnectionHandlerCommand::AddPeer(peer_id) => self.peer_ids.push(peer_id),
-            ConnectionHandlerCommand::AddConnectionInfo {
-                connection_id,
-                info,
-            } => drop(self.connection_infos.insert(connection_id, info)),
+            ConnectionHandlerCommand::AddConnectionInfo { client_id, info } => {
+                drop(self.connection_infos.insert(client_id, info))
+            }
         }
         Ok(())
     }
@@ -149,11 +149,11 @@ impl ConnectionHandler {
         write_whole_packet(&mut self.stream, &mut self.write_buf, packet).await
     }
 
-    pub fn connection_id(&self) -> Option<u64> {
-        self.connection_id
+    pub fn client_id(&self) -> Option<ClientId> {
+        self.client_id
     }
 
-    pub fn connection_info(&self, id: u64) -> Option<&PeerInfo> {
+    pub fn connection_info(&self, id: ClientId) -> Option<&PeerInfo> {
         self.connection_infos.get(&id)
     }
 }
