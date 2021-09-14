@@ -107,9 +107,11 @@ fn handle_disconnect_client(instance: &mut Instance, client: ClientId) {
 
 fn handle_broadcast_disconnection(instance: &mut Instance, client: ClientRef) {
     for peer in instance.clients.values() {
-        peer.send(ClientMessage::ClientDisconnected {
-            client: peer.clone(),
-        });
+        if peer.id() != client.id() {
+            peer.send(ClientMessage::ClientDisconnected {
+                client: peer.clone(),
+            });
+        }
     }
 }
 

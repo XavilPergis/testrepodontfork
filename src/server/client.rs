@@ -247,13 +247,17 @@ pub async fn run_client(
     mut messages: UnboundedReceiver<ClientMessage>,
     packet_sender: UnboundedSender<ServerToClientPacket>,
 ) -> ServerResult<()> {
-    let mut ctx = Client::new(reference, instance.clone());
+    let mut ctx = Client::new(reference.clone(), instance.clone());
     while let Some(message) = messages.recv().await {
         match message {
             ClientMessage::ReceivePacket(packet) => {
                 handle_receive_packet(&mut ctx, packet_sender.clone(), packet).await;
             }
-            ClientMessage::Disconnect => break,
+            ClientMessage::Disconnect => {
+                instance.send(InstanceMessage::BroadcastDisconnection { client: reference });
+                instance.send(InstanceMessage::DisconnectClient { client: id });
+                break;
+            }
 
             ClientMessage::ClientMessage { client, message } => {
                 handle_client_message(&mut ctx, packet_sender.clone(), client, message);
