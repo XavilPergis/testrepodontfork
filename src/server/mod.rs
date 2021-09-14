@@ -1,4 +1,4 @@
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::oneshot};
 
 use crate::common::CommonError;
 
@@ -25,6 +25,36 @@ pub async fn run_server() -> ServerResult<()> {
     }
 
     Ok(())
+}
+
+pub async fn get_responder<T, F, R>(func: F) -> T
+where
+    F: FnOnce(Responder<T>) -> R,
+{
+    let (tx, rx) = oneshot::channel();
+    func(Responder { sender: Some(tx) });
+    rx.await.unwrap()
+}
+
+#[derive(Debug)]
+pub struct Responder<T> {
+    sender: Option<oneshot::Sender<T>>,
+}
+
+impl<T> Responder<T> {
+    pub fn send(self, value: T) {
+        if let Some(sender) = self.sender {
+            let _ = sender.send(value);
+        }
+    }
+}
+
+impl Responder<()> {
+    pub fn signal(self) {
+        if let Some(sender) = self.sender {
+            let _ = sender.send(());
+        }
+    }
 }
 
 pub mod client;

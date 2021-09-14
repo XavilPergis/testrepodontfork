@@ -1,21 +1,18 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use tokio::{
-    net::{TcpListener, TcpStream, ToSocketAddrs},
-    sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
-        oneshot,
-    },
+    net::TcpStream,
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 
 use crate::{
-    common::packet::{ClientId, PeerInfo, ServerToClientPacket},
+    common::packet::{ClientId, PeerInfo},
     server::client::create_client,
 };
 
 use super::{
-    client::{ClientMessage, ClientRef, Responder},
-    ServerResult,
+    client::{ClientMessage, ClientRef},
+    Responder, ServerResult,
 };
 
 #[derive(Debug)]
@@ -50,7 +47,6 @@ pub enum InstanceMessage {
         responder: Responder<Vec<ClientRef>>,
     },
     QueryPeerInfo {
-        client: ClientRef,
         peer: ClientId,
         responder: Responder<PeerInfo>,
     },
@@ -208,11 +204,9 @@ async fn run_instance(
             InstanceMessage::QueryPeers { client, responder } => {
                 handle_query_peers(&mut instance, client, responder);
             }
-            InstanceMessage::QueryPeerInfo {
-                client,
-                peer,
-                responder,
-            } => handle_query_peer_info(&mut instance, peer, responder),
+            InstanceMessage::QueryPeerInfo { peer, responder } => {
+                handle_query_peer_info(&mut instance, peer, responder)
+            }
             InstanceMessage::UpdateClientUsername { client, username } => {
                 handle_update_client_username(&mut instance, client, username)
             }

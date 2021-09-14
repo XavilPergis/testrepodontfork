@@ -5,10 +5,7 @@ use tokio::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
     },
-    sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
-        oneshot,
-    },
+    sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 
 use crate::common::packet::{
@@ -17,6 +14,7 @@ use crate::common::packet::{
 };
 
 use super::{
+    get_responder,
     instance::{InstanceMessage, InstanceRef},
     room::RoomRef,
     ServerResult,
@@ -25,7 +23,6 @@ use super::{
 #[derive(Debug)]
 pub enum ClientMessage {
     ReceivePacket(ClientToServerPacket),
-    // SendPacket(ServerToClientPacket),
     Disconnect,
 
     ClientMessage {
@@ -80,36 +77,6 @@ impl Client {
     }
 }
 
-async fn get_response<T, F, R>(func: F) -> T
-where
-    F: FnOnce(Responder<T>) -> R,
-{
-    let (tx, rx) = oneshot::channel();
-    func(Responder { sender: Some(tx) });
-    rx.await.unwrap()
-}
-
-#[derive(Debug)]
-pub struct Responder<T> {
-    sender: Option<oneshot::Sender<T>>,
-}
-
-impl<T> Responder<T> {
-    pub fn send(self, value: T) {
-        if let Some(sender) = self.sender {
-            let _ = sender.send(value);
-        }
-    }
-}
-
-impl Responder<()> {
-    pub fn signal(self) {
-        if let Some(sender) = self.sender {
-            let _ = sender.send(());
-        }
-    }
-}
-
 async fn handle_receive_packet(
     ctx: &mut Client,
     packet_sender: UnboundedSender<ServerToClientPacket>,
@@ -122,7 +89,7 @@ async fn handle_receive_packet(
                 client: ctx.reference.id(),
                 username: Arc::new(username),
             });
-            get_response(|responder| {
+            get_responder(|responder| {
                 ctx.instance.send(InstanceMessage::BroadcastConnection {
                     client: ctx.reference.clone(),
                     responder,
@@ -141,7 +108,7 @@ async fn handle_receive_packet(
         }
 
         ClientToServerPacketKind::Message { message } => {
-            get_response(|responder| {
+            get_responder(|responder| {
                 ctx.instance.send(InstanceMessage::BroadcastMessage {
                     sender: ctx.reference.clone(),
                     message: Arc::new(message),
@@ -158,9 +125,9 @@ async fn handle_receive_packet(
                 .unwrap();
         }
 
-        ClientToServerPacketKind::Shutdown {} => todo!(),
+        ClientToServerPacketKind::Shutdown {} => {}
         ClientToServerPacketKind::RequestPeerListing {} => {
-            let peers = get_response(|responder| {
+            let peers = get_responder(|responder| {
                 ctx.instance.send(InstanceMessage::QueryPeers {
                     client: ctx.reference.clone(),
                     responder,
@@ -180,16 +147,13 @@ async fn handle_receive_packet(
         ClientToServerPacketKind::RequestPeerInfo { peer_ids } => {
             let mut peer_infos = HashMap::new();
 
-            for peer_id in peer_ids {
-                let info = get_response(|responder| {
-                    ctx.instance.send(InstanceMessage::QueryPeerInfo {
-                        client: ctx.reference.clone(),
-                        peer: peer_id,
-                        responder,
-                    })
+            for peer in peer_ids {
+                let info = get_responder(|responder| {
+                    ctx.instance
+                        .send(InstanceMessage::QueryPeerInfo { peer, responder })
                 })
                 .await;
-                peer_infos.insert(peer_id, info);
+                peer_infos.insert(peer, info);
             }
 
             packet_sender
