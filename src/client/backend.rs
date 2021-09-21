@@ -5,12 +5,15 @@ use crossterm::{
     terminal::ClearType,
     QueueableCommand,
 };
-use futures::{Future, StreamExt};
+use futures::StreamExt;
 use std::sync::RwLock;
 
-use crate::client::{
-    terminal::TerminalScalar, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-    TerminalKeyEvent, TerminalMouseEvent,
+use crate::{
+    client::{
+        terminal::TerminalScalar, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+        TerminalKeyEvent, TerminalMouseEvent,
+    },
+    common::DynamicFuture,
 };
 
 use super::{ClientResult, Color, TerminalCell, TerminalEvent, TerminalPos, TerminalSize};
@@ -19,8 +22,6 @@ pub trait TerminalBackend {
     fn redraw(&mut self, buffer: &[TerminalCell]) -> ClientResult<()>;
     fn size(&self) -> ClientResult<TerminalSize>;
 }
-
-pub type DynamicFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'a>>;
 
 pub type EventPollResult = std::io::Result<Option<TerminalEvent>>;
 

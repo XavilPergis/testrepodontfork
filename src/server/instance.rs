@@ -6,12 +6,14 @@ use tokio::{
 };
 
 use crate::{
-    common::packet::{ClientId, PeerInfo},
+    common::packet::{ClientId, PeerInfo, RoomId, RoomInfo},
     server::client::create_client,
 };
 
 use super::{
-    client::{ClientMessage, ClientRef},
+    client::ClientRef,
+    get_responder,
+    room::{create_room, RoomRef},
     Responder, ServerResult,
 };
 
@@ -27,28 +29,19 @@ pub enum InstanceMessage {
     UpdateClientUsername {
         client: ClientId,
         username: Arc<String>,
-    },
-
-    BroadcastMessage {
-        sender: ClientRef,
-        message: Arc<String>,
         responder: Responder<()>,
     },
-    BroadcastConnection {
-        client: ClientRef,
-        responder: Responder<()>,
-    },
-    BroadcastDisconnection {
-        client: ClientRef,
-    },
 
-    QueryPeers {
-        client: ClientRef,
-        responder: Responder<Vec<ClientRef>>,
-    },
-    QueryPeerInfo {
+    QueryClientInfo {
         peer: ClientId,
-        responder: Responder<PeerInfo>,
+        responder: Responder<Option<PeerInfo>>,
+    },
+    QueryRoomInfo {
+        room_id: RoomId,
+        responder: Responder<Option<RoomInfo>>,
+    },
+    QueryRoomList {
+        responder: Responder<Vec<RoomRef>>,
     },
 }
 
@@ -61,6 +54,44 @@ impl InstanceRef {
     pub fn send<M: Into<InstanceMessage>>(&self, message: M) {
         self.channel.send(message.into()).unwrap()
     }
+
+    pub async fn disconnect_client(&self, client: ClientId) {
+        self.send(InstanceMessage::DisconnectClient { client });
+    }
+
+    pub async fn update_client_username(
+        &self,
+        client: ClientId,
+        username: Arc<String>,
+    ) -> ServerResult<()> {
+        get_responder(|responder| {
+            self.send(InstanceMessage::UpdateClientUsername {
+                client,
+                username,
+                responder,
+            })
+        })
+        .await
+    }
+
+    pub async fn query_client_info(&self, client: ClientId) -> ServerResult<Option<PeerInfo>> {
+        get_responder(|responder| {
+            self.send(InstanceMessage::QueryClientInfo {
+                peer: client,
+                responder,
+            })
+        })
+        .await
+    }
+
+    pub async fn query_room_info(&self, room_id: RoomId) -> ServerResult<Option<RoomInfo>> {
+        get_responder(|responder| self.send(InstanceMessage::QueryRoomInfo { room_id, responder }))
+            .await
+    }
+
+    pub async fn query_room_list(&self) -> ServerResult<Vec<RoomRef>> {
+        get_responder(|responder| self.send(InstanceMessage::QueryRoomList { responder })).await
+    }
 }
 
 #[derive(Debug)]
@@ -70,6 +101,10 @@ pub struct Instance {
     next_client_id: ClientId,
     clients: HashMap<ClientId, ClientRef>,
     usernames: HashMap<ClientId, Arc<String>>,
+
+    next_room_id: RoomId,
+    rooms: HashMap<RoomId, RoomRef>,
+    room_names: HashMap<RoomId, Arc<String>>,
 }
 
 impl Instance {
@@ -79,6 +114,9 @@ impl Instance {
             next_client_id: ClientId(0),
             clients: HashMap::default(),
             usernames: HashMap::default(),
+            next_room_id: RoomId(0),
+            rooms: HashMap::default(),
+            room_names: HashMap::default(),
         }
     }
 
@@ -87,6 +125,24 @@ impl Instance {
         self.next_client_id.0 += 1;
         res
     }
+
+    fn next_room_id(&mut self) -> RoomId {
+        let res = self.next_room_id;
+        self.next_room_id.0 += 1;
+        res
+    }
+}
+
+fn handle_create_room(instance: &mut Instance, name: Arc<String>) {
+    let id = instance.next_room_id();
+    let room = create_room(id, instance.reference.clone());
+    // TODO: broadcast room creation
+    // for client in instance.clients.values() {
+    //     client.send(ClientMessage::);
+    // }
+    instance.room_names.insert(id, name);
+    instance.rooms.insert(id, room);
+    log::debug!("room id {} created", id);
 }
 
 fn handle_establish_connection(instance: &mut Instance, stream: TcpStream) {
@@ -101,73 +157,20 @@ fn handle_disconnect_client(instance: &mut Instance, client: ClientId) {
     log::debug!("client id {} disconnected", client);
 }
 
-fn handle_broadcast_disconnection(instance: &mut Instance, client: ClientRef) {
-    for peer in instance.clients.values() {
-        if peer.id() != client.id() {
-            peer.send(ClientMessage::ClientDisconnected {
-                client: peer.clone(),
-            });
-        }
-    }
-}
-
-fn handle_broadcast_connection(
-    instance: &mut Instance,
-    client: ClientRef,
-    responder: Responder<()>,
-) {
-    for peer in instance.clients.values() {
-        if peer.id() != client.id() {
-            peer.send(ClientMessage::ClientConnected {
-                client: client.clone(),
-            })
-        }
+fn handle_query_peer_info(instance: &mut Instance, client: ClientId) -> Option<PeerInfo> {
+    if !instance.clients.contains_key(&client) {
+        return None;
     }
 
-    responder.signal();
-}
-
-fn handle_broadcast_message(
-    instance: &mut Instance,
-    sender: ClientRef,
-    message: Arc<String>,
-    responder: Responder<()>,
-) {
-    for peer in instance.clients.values() {
-        if peer.id() != sender.id() {
-            peer.send(ClientMessage::ClientMessage {
-                client: sender.clone(),
-                message: Arc::clone(&message),
-            })
-        }
-    }
-
-    responder.signal();
-}
-
-fn handle_query_peers(
-    instance: &mut Instance,
-    client: ClientRef,
-    responder: Responder<Vec<ClientRef>>,
-) {
-    responder.send(
-        instance
-            .clients
-            .values()
-            .filter(|peer| peer.id() != client.id())
-            .cloned()
-            .collect(),
-    );
-}
-
-fn handle_query_peer_info(
-    instance: &mut Instance,
-    client: ClientId,
-    responder: Responder<PeerInfo>,
-) {
-    responder.send(PeerInfo {
+    Some(PeerInfo {
         username: instance.usernames.get(&client).map(|name| (**name).clone()),
-    });
+    })
+}
+
+fn handle_query_room_info(instance: &mut Instance, room_id: RoomId) -> Option<RoomInfo> {
+    Some(RoomInfo {
+        name: (**instance.room_names.get(&room_id)?).clone(),
+    })
 }
 
 fn handle_update_client_username(instance: &mut Instance, client: ClientId, username: Arc<String>) {
@@ -175,40 +178,46 @@ fn handle_update_client_username(instance: &mut Instance, client: ClientId, user
     instance.usernames.insert(client, username);
 }
 
+fn handle_query_room_list(instance: &mut Instance) -> Vec<RoomRef> {
+    instance.rooms.values().cloned().collect()
+}
+
 async fn run_instance(
     reference: InstanceRef,
     mut messages: UnboundedReceiver<InstanceMessage>,
 ) -> ServerResult<()> {
     let mut instance = Instance::new(reference);
+
+    handle_create_room(&mut instance, String::from("general").into());
+    handle_create_room(&mut instance, String::from("test").into());
+    handle_create_room(&mut instance, String::from("unsafe_unsafe").into());
+
     while let Some(message) = messages.recv().await {
         match message {
             InstanceMessage::EstablishConnection { stream, .. } => {
-                handle_establish_connection(&mut instance, stream);
+                handle_establish_connection(&mut instance, stream)
             }
             InstanceMessage::DisconnectClient { client } => {
-                handle_disconnect_client(&mut instance, client);
+                handle_disconnect_client(&mut instance, client)
             }
-            InstanceMessage::BroadcastMessage {
-                sender,
-                message,
+
+            InstanceMessage::QueryClientInfo { peer, responder } => {
+                responder.send(handle_query_peer_info(&mut instance, peer))
+            }
+            InstanceMessage::QueryRoomInfo { room_id, responder } => {
+                responder.send(handle_query_room_info(&mut instance, room_id))
+            }
+            InstanceMessage::UpdateClientUsername {
+                client,
+                username,
                 responder,
-            } => {
-                handle_broadcast_message(&mut instance, sender, message, responder);
-            }
-            InstanceMessage::BroadcastConnection { client, responder } => {
-                handle_broadcast_connection(&mut instance, client, responder);
-            }
-            InstanceMessage::BroadcastDisconnection { client } => {
-                handle_broadcast_disconnection(&mut instance, client);
-            }
-            InstanceMessage::QueryPeers { client, responder } => {
-                handle_query_peers(&mut instance, client, responder);
-            }
-            InstanceMessage::QueryPeerInfo { peer, responder } => {
-                handle_query_peer_info(&mut instance, peer, responder)
-            }
-            InstanceMessage::UpdateClientUsername { client, username } => {
-                handle_update_client_username(&mut instance, client, username)
+            } => responder.send(handle_update_client_username(
+                &mut instance,
+                client,
+                username,
+            )),
+            InstanceMessage::QueryRoomList { responder } => {
+                responder.send(handle_query_room_list(&mut instance))
             }
         }
     }

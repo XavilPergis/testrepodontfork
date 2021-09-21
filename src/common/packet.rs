@@ -12,6 +12,8 @@ pub trait PacketCodec: Sized {
     fn serialize<'buf>(&self, ctx: &mut PacketSerializerContext<'buf>)
         -> PacketSerializeResult<()>;
 
+    // TODO: return untrusted wrapper so you have to explicitly verify
+    // that user data has been validated
     fn deserialize<'buf>(
         ctx: &mut PacketDeserializerContext<'buf>,
     ) -> PacketDeserializeResult<Self>;
@@ -22,7 +24,7 @@ pub struct ClientId(pub u64);
 
 impl std::fmt::Display for ClientId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#client:{}", self.0)?;
+        write!(f, "@client-{}", self.0)?;
         Ok(())
     }
 }
@@ -39,6 +41,31 @@ impl PacketCodec for ClientId {
         ctx: &mut PacketDeserializerContext<'buf>,
     ) -> PacketDeserializeResult<Self> {
         ctx.deserialize().map(ClientId)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct RoomId(pub u64);
+
+impl std::fmt::Display for RoomId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#room-{}", self.0)?;
+        Ok(())
+    }
+}
+
+impl PacketCodec for RoomId {
+    fn serialize<'buf>(
+        &self,
+        ctx: &mut PacketSerializerContext<'buf>,
+    ) -> PacketSerializeResult<()> {
+        ctx.serialize(&self.0)
+    }
+
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<Self> {
+        ctx.deserialize().map(RoomId)
     }
 }
 
@@ -83,6 +110,29 @@ impl PacketCodec for PeerInfo {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct RoomInfo {
+    pub name: String,
+}
+
+impl PacketCodec for RoomInfo {
+    fn serialize<'buf>(
+        &self,
+        ctx: &mut PacketSerializerContext<'buf>,
+    ) -> PacketSerializeResult<()> {
+        ctx.serialize(&self.name)?;
+        Ok(())
+    }
+
+    fn deserialize<'buf>(
+        ctx: &mut PacketDeserializerContext<'buf>,
+    ) -> PacketDeserializeResult<RoomInfo> {
+        Ok(RoomInfo {
+            name: ctx.deserialize()?,
+        })
+    }
+}
+
 // server -> client
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServerToClientResponsePacket {
@@ -91,6 +141,8 @@ pub enum ServerToClientResponsePacket {
     ShutdownAck {},
     PeerListingResponse { peers: Vec<ClientId> },
     PeerInfoResponse { peers: HashMap<ClientId, PeerInfo> },
+    RoomListingResponse { rooms: Vec<RoomId> },
+    RoomInfoResponse { rooms: HashMap<RoomId, RoomInfo> },
 }
 
 impl PacketCodec for ServerToClientResponsePacket {
@@ -117,6 +169,14 @@ impl PacketCodec for ServerToClientResponsePacket {
                 ctx.serialize(&S2C_RESPONSE_ID_PEER_INFO_RESPONSE)?;
                 ctx.serialize(peers)?;
             }
+            ServerToClientResponsePacket::RoomListingResponse { rooms } => {
+                ctx.serialize(&S2C_RESPONSE_ID_ROOM_LISTING_RESPONSE)?;
+                ctx.serialize(rooms)?;
+            }
+            ServerToClientResponsePacket::RoomInfoResponse { rooms } => {
+                ctx.serialize(&S2C_RESPONSE_ID_ROOM_INFO_RESPONSE)?;
+                ctx.serialize(rooms)?;
+            }
         }
         Ok(())
     }
@@ -138,6 +198,14 @@ impl PacketCodec for ServerToClientResponsePacket {
             S2C_RESPONSE_ID_PEER_INFO_RESPONSE => ServerToClientResponsePacket::PeerInfoResponse {
                 peers: ctx.deserialize()?,
             },
+            S2C_RESPONSE_ID_ROOM_LISTING_RESPONSE => {
+                ServerToClientResponsePacket::RoomListingResponse {
+                    rooms: ctx.deserialize()?,
+                }
+            }
+            S2C_RESPONSE_ID_ROOM_INFO_RESPONSE => ServerToClientResponsePacket::RoomInfoResponse {
+                rooms: ctx.deserialize()?,
+            },
             other => return Err(PacketDeserializeError::UnknownPacketId(other)),
         })
     }
@@ -149,13 +217,22 @@ pub enum ServerToClientPacket {
         rid: ResponseId,
         packet: ServerToClientResponsePacket,
     },
+    // RoomAdded {
+    //     room_id: RoomId,
+    // },
+    // RoomRemoved {
+    //     room_id: RoomId,
+    // },
     PeerConnected {
+        room_id: RoomId,
         peer_id: ClientId,
     },
     PeerDisconnected {
+        room_id: RoomId,
         peer_id: ClientId,
     },
     PeerMessage {
+        room_id: RoomId,
         peer_id: ClientId,
         message: String,
     },
@@ -166,6 +243,8 @@ pub const S2C_RESPONSE_ID_MESSAGE_ACK: u32 = 2;
 pub const S2C_RESPONSE_ID_SHUTDOWN_ACK: u32 = 3;
 pub const S2C_RESPONSE_ID_PEER_LISTING_RESPONSE: u32 = 4;
 pub const S2C_RESPONSE_ID_PEER_INFO_RESPONSE: u32 = 5;
+pub const S2C_RESPONSE_ID_ROOM_LISTING_RESPONSE: u32 = 6;
+pub const S2C_RESPONSE_ID_ROOM_INFO_RESPONSE: u32 = 7;
 
 pub const S2C_ID_RESPONSE: u32 = 0;
 pub const S2C_ID_PEER_CONNECTED: u32 = 1;
@@ -183,16 +262,23 @@ impl PacketCodec for ServerToClientPacket {
                 ctx.serialize(rid)?;
                 ctx.serialize(packet)?;
             }
-            ServerToClientPacket::PeerConnected { peer_id } => {
+            ServerToClientPacket::PeerConnected { room_id, peer_id } => {
                 ctx.serialize(&S2C_ID_PEER_CONNECTED)?;
+                ctx.serialize(room_id)?;
                 ctx.serialize(peer_id)?;
             }
-            ServerToClientPacket::PeerDisconnected { peer_id } => {
+            ServerToClientPacket::PeerDisconnected { room_id, peer_id } => {
                 ctx.serialize(&S2C_ID_PEER_DISCONNECTED)?;
+                ctx.serialize(room_id)?;
                 ctx.serialize(peer_id)?;
             }
-            ServerToClientPacket::PeerMessage { peer_id, message } => {
+            ServerToClientPacket::PeerMessage {
+                room_id,
+                peer_id,
+                message,
+            } => {
                 ctx.serialize(&S2C_ID_PEER_MESSAGE)?;
+                ctx.serialize(room_id)?;
                 ctx.serialize(peer_id)?;
                 ctx.serialize(message)?;
             }
@@ -209,12 +295,15 @@ impl PacketCodec for ServerToClientPacket {
                 packet: ctx.deserialize()?,
             },
             S2C_ID_PEER_CONNECTED => ServerToClientPacket::PeerConnected {
+                room_id: ctx.deserialize()?,
                 peer_id: ctx.deserialize()?,
             },
             S2C_ID_PEER_DISCONNECTED => ServerToClientPacket::PeerDisconnected {
+                room_id: ctx.deserialize()?,
                 peer_id: ctx.deserialize()?,
             },
             S2C_ID_PEER_MESSAGE => ServerToClientPacket::PeerMessage {
+                room_id: ctx.deserialize()?,
                 peer_id: ctx.deserialize()?,
                 message: ctx.deserialize()?,
             },
@@ -227,9 +316,11 @@ impl PacketCodec for ServerToClientPacket {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ClientToServerPacketKind {
     Connect { username: String },
-    Message { message: String },
+    Message { room: RoomId, message: String },
     Shutdown {},
-    RequestPeerListing {},
+    RequestRoomListing {},
+    RequestRoomInfo { room_ids: Vec<RoomId> },
+    RequestPeerListing { room: RoomId },
     RequestPeerInfo { peer_ids: Vec<ClientId> },
 }
 
@@ -238,6 +329,8 @@ pub const C2S_ID_MESSAGE: u32 = 2;
 pub const C2S_ID_SHUTDOWN: u32 = 3;
 pub const C2S_ID_REQUEST_PEER_LISTING: u32 = 4;
 pub const C2S_ID_REQUEST_PEER_INFO: u32 = 5;
+pub const C2S_ID_REQUEST_ROOM_LISTING: u32 = 6;
+pub const C2S_ID_REQUEST_ROOM_INFO: u32 = 7;
 
 impl PacketCodec for ClientToServerPacketKind {
     fn serialize<'buf>(
@@ -247,21 +340,30 @@ impl PacketCodec for ClientToServerPacketKind {
         match self {
             ClientToServerPacketKind::Connect { username } => {
                 ctx.serialize::<u32>(&C2S_ID_CONNECT)?;
-                ctx.serialize::<String>(username)?;
+                ctx.serialize(username)?;
             }
-            ClientToServerPacketKind::Message { message } => {
+            ClientToServerPacketKind::Message { room, message } => {
                 ctx.serialize::<u32>(&C2S_ID_MESSAGE)?;
-                ctx.serialize::<String>(message)?;
+                ctx.serialize(room)?;
+                ctx.serialize(message)?;
             }
             ClientToServerPacketKind::Shutdown {} => {
                 ctx.serialize::<u32>(&C2S_ID_SHUTDOWN)?;
             }
-            ClientToServerPacketKind::RequestPeerListing {} => {
+            ClientToServerPacketKind::RequestPeerListing { room } => {
                 ctx.serialize::<u32>(&C2S_ID_REQUEST_PEER_LISTING)?;
+                ctx.serialize(room)?;
             }
             ClientToServerPacketKind::RequestPeerInfo { peer_ids } => {
                 ctx.serialize::<u32>(&C2S_ID_REQUEST_PEER_INFO)?;
-                ctx.serialize::<Vec<ClientId>>(peer_ids)?;
+                ctx.serialize(peer_ids)?;
+            }
+            ClientToServerPacketKind::RequestRoomListing {} => {
+                ctx.serialize::<u32>(&C2S_ID_REQUEST_ROOM_LISTING)?;
+            }
+            ClientToServerPacketKind::RequestRoomInfo { room_ids } => {
+                ctx.serialize::<u32>(&C2S_ID_REQUEST_ROOM_INFO)?;
+                ctx.serialize(room_ids)?;
             }
         }
         Ok(())
@@ -275,12 +377,19 @@ impl PacketCodec for ClientToServerPacketKind {
                 username: ctx.deserialize()?,
             },
             C2S_ID_MESSAGE => ClientToServerPacketKind::Message {
+                room: ctx.deserialize()?,
                 message: ctx.deserialize()?,
             },
             C2S_ID_SHUTDOWN => ClientToServerPacketKind::Shutdown {},
-            C2S_ID_REQUEST_PEER_LISTING => ClientToServerPacketKind::RequestPeerListing {},
+            C2S_ID_REQUEST_PEER_LISTING => ClientToServerPacketKind::RequestPeerListing {
+                room: ctx.deserialize()?,
+            },
             C2S_ID_REQUEST_PEER_INFO => ClientToServerPacketKind::RequestPeerInfo {
                 peer_ids: ctx.deserialize()?,
+            },
+            C2S_ID_REQUEST_ROOM_LISTING => ClientToServerPacketKind::RequestRoomListing {},
+            C2S_ID_REQUEST_ROOM_INFO => ClientToServerPacketKind::RequestRoomInfo {
+                room_ids: ctx.deserialize()?,
             },
             other => return Err(PacketDeserializeError::UnknownPacketId(other)),
         })

@@ -12,7 +12,7 @@ use tokio::{
 use crate::common::{
     packet::{
         read_whole_packet, write_whole_packet, ClientId, ClientToServerPacket,
-        ClientToServerPacketKind, PeerInfo, ResponseId, ServerToClientPacket,
+        ClientToServerPacketKind, PeerInfo, ResponseId, RoomId, RoomInfo, ServerToClientPacket,
         ServerToClientResponsePacket,
     },
     CommonResult,
@@ -33,6 +33,8 @@ pub enum ConnectionHandlerCommand {
     SendPacket(ClientToServerPacket),
     AddPeer(ClientId),
     AddConnectionInfo { client_id: ClientId, info: PeerInfo },
+    AddRoom(RoomId),
+    AddRoomInfo { room_id: RoomId, info: RoomInfo },
 }
 
 #[derive(Debug)]
@@ -43,6 +45,9 @@ pub struct ConnectionHandler {
     client_id: Option<ClientId>,
     peer_ids: Vec<ClientId>,
     connection_infos: HashMap<ClientId, PeerInfo>,
+
+    room_ids: Vec<RoomId>,
+    room_infos: HashMap<RoomId, RoomInfo>,
 
     inbound: mpsc::UnboundedReceiver<ConnectionHandlerEvent>,
     loopback: mpsc::UnboundedSender<ConnectionHandlerEvent>,
@@ -65,14 +70,16 @@ impl ConnectionHandler {
 
         Self {
             stream: tcp_writer,
-            write_buf: vec![],
-            peer_ids: vec![],
+            write_buf: Vec::default(),
+            peer_ids: Vec::default(),
             client_id: None,
             connection_infos: HashMap::default(),
             inbound,
             loopback,
-            tasks: HashMap::new(),
+            tasks: HashMap::default(),
             current_response_id: 0,
+            room_ids: Vec::default(),
+            room_infos: HashMap::default(),
         }
     }
 
@@ -112,7 +119,11 @@ impl ConnectionHandler {
             ConnectionHandlerCommand::SendPacket(packet) => self.write_packet(&packet).await?,
             ConnectionHandlerCommand::AddPeer(peer_id) => self.peer_ids.push(peer_id),
             ConnectionHandlerCommand::AddConnectionInfo { client_id, info } => {
-                drop(self.connection_infos.insert(client_id, info))
+                self.connection_infos.insert(client_id, info);
+            }
+            ConnectionHandlerCommand::AddRoom(room_id) => self.room_ids.push(room_id),
+            ConnectionHandlerCommand::AddRoomInfo { room_id, info } => {
+                self.room_infos.insert(room_id, info);
             }
         }
         Ok(())
@@ -155,6 +166,20 @@ impl ConnectionHandler {
 
     pub fn connection_info(&self, id: ClientId) -> Option<&PeerInfo> {
         self.connection_infos.get(&id)
+    }
+
+    pub fn peers(&self) -> impl Iterator<Item = (ClientId, Option<&PeerInfo>)> + '_ {
+        self.peer_ids
+            .iter()
+            .copied()
+            .map(move |id| (id, self.connection_infos.get(&id)))
+    }
+
+    pub fn rooms(&self) -> impl Iterator<Item = (RoomId, Option<&RoomInfo>)> + '_ {
+        self.room_ids
+            .iter()
+            .copied()
+            .map(move |id| (id, self.room_infos.get(&id)))
     }
 }
 

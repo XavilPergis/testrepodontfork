@@ -1,8 +1,14 @@
+use std::pin::Pin;
+
+use futures::Future;
+
 mod context;
 mod impls;
 pub mod packet;
 
 pub type CommonResult<T> = Result<T, CommonError>;
+
+pub type DynamicFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'a>>;
 
 #[derive(Debug)]
 pub enum CommonError {

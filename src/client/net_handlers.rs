@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     client::{connection_handler::ConnectionHandlerCommand, ChatLine},
-    common::packet::{ClientId, ClientToServerPacketKind, ServerToClientResponsePacket},
+    common::packet::{ClientId, ClientToServerPacketKind, RoomId, ServerToClientResponsePacket},
 };
 
 use super::{connection_handler::ClientTask, AppCommand, ClientResult};
@@ -24,6 +24,23 @@ async fn query_peers(task: &mut ClientTask, peers: Vec<ClientId>) -> ClientResul
     Ok(())
 }
 
+async fn query_rooms(task: &mut ClientTask, rooms: Vec<RoomId>) -> ClientResult<()> {
+    task.send_packet(ClientToServerPacketKind::RequestRoomInfo { room_ids: rooms })
+        .await?;
+
+    match task.recv().await.unwrap() {
+        ServerToClientResponsePacket::RoomInfoResponse { rooms } => {
+            for (room_id, info) in rooms {
+                task.send(ConnectionHandlerCommand::AddRoomInfo { room_id, info })
+                    .await?;
+            }
+        }
+        _ => todo!(),
+    }
+
+    Ok(())
+}
+
 pub async fn negotiate_connection(
     mut task: ClientTask,
     cmd: mpsc::UnboundedSender<AppCommand>,
@@ -32,36 +49,35 @@ pub async fn negotiate_connection(
     task.send_packet(ClientToServerPacketKind::Connect { username })
         .await?;
 
-    let client_id = match task.recv().await.unwrap() {
+    match task.recv().await.unwrap() {
         ServerToClientResponsePacket::ConnectAck { client_id } => {
             task.send(ConnectionHandlerCommand::SetConnectionId(client_id))
                 .await?;
             query_peers(&mut task, vec![client_id]).await?;
-            client_id
         }
         _ => todo!(),
     };
 
-    task.send_packet(ClientToServerPacketKind::RequestPeerListing {})
+    task.send_packet(ClientToServerPacketKind::RequestRoomListing {})
         .await?;
 
-    let peers = match task.recv().await.unwrap() {
-        ServerToClientResponsePacket::PeerListingResponse { peers } => {
-            for peer_id in peers.iter().copied() {
-                task.send(ConnectionHandlerCommand::AddPeer(peer_id))
+    match task.recv().await.unwrap() {
+        ServerToClientResponsePacket::RoomListingResponse { rooms } => {
+            for room_id in rooms.iter().copied() {
+                task.send(ConnectionHandlerCommand::AddRoom(room_id))
                     .await?;
             }
-            query_peers(&mut task, peers.clone()).await?;
-            peers
+            query_rooms(&mut task, rooms.clone()).await?;
+            rooms
         }
         _ => todo!(),
     };
 
-    cmd.send(AppCommand::AddChatLine(ChatLine::ConnectInfo {
-        id: client_id,
-        peer_ids: peers,
-    }))
-    .unwrap();
+    // cmd.send(AppCommand::AddChatLine(ChatLine::ConnectInfo {
+    //     id: client_id,
+    //     peer_ids: peers,
+    // }))
+    // .unwrap();
 
     Ok(())
 }
@@ -73,6 +89,7 @@ pub async fn send_peer_message(
     message: String,
 ) -> ClientResult<()> {
     task.send_packet(ClientToServerPacketKind::Message {
+        room: todo!(),
         message: message.clone(),
     })
     .await?;

@@ -216,8 +216,19 @@ impl App {
         Box::new(VerticalSplitView::new(chat_bar, chat_lines))
     }
 
+    fn build_room_list_widget(&self) -> Box<dyn Widget + '_> {
+        let mut room_widgets = vec![];
+        for (_, info) in self.client.rooms() {
+            if let Some(info) = info {
+                room_widgets.push(TextWidget::new(info.name.as_str()));
+            }
+        }
+        Box::new(VerticalListWidget::new(room_widgets))
+    }
+
     fn build_widget_tree(&self) -> Box<dyn Widget + '_> {
-        self.build_chat_widget()
+        // self.build_chat_widget()
+        self.build_room_list_widget()
     }
 
     fn redraw_message_ui<B: TerminalBackend>(&self, terminal: &mut B) -> ClientResult<()> {
@@ -287,15 +298,19 @@ impl App {
         packet: ServerToClientPacket,
     ) -> ClientResult<ControlFlow> {
         match packet {
-            ServerToClientPacket::PeerConnected { peer_id } => {
+            ServerToClientPacket::PeerConnected { room_id, peer_id } => {
                 let cmd = self.command_tx.clone();
                 self.client
                     .spawn_task(|task| net_handlers::handle_peer_connect(task, cmd, peer_id));
             }
-            ServerToClientPacket::PeerDisconnected { peer_id } => {
+            ServerToClientPacket::PeerDisconnected { room_id, peer_id } => {
                 self.chat_lines.push(ChatLine::Disconnected { id: peer_id });
             }
-            ServerToClientPacket::PeerMessage { peer_id, message } => {
+            ServerToClientPacket::PeerMessage {
+                room_id,
+                peer_id,
+                message,
+            } => {
                 self.chat_lines.push(ChatLine::Text {
                     id: peer_id,
                     message,
